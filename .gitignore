@@ -1,0 +1,84 @@
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# ========================
+# Virtual Environment
+# ========================
+llm_hallucination_env/
+venv/
+.venv/
+env/
+
+# ========================
+# Model Weights & Checkpoints
+# (Large binary files — use Git LFS or download scripts instead)
+# ========================
+models/
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+*.gguf
+
+# ========================
+# Datasets
+# (Typically too large for Git — download via script or HuggingFace)
+# ========================
+dataset/
+
+# ========================
+# HuggingFace Cache
+# ========================
+.cache/
+
+# ========================
+# Output & Results
+# (Regenerable artifacts)
+# ========================
+output/
+results/
+
+# ========================
+# IDE & Editor
+# ========================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ========================
+# OS Files
+# ========================
+.DS_Store
+Thumbs.db
+
+# ========================
+# Jupyter Notebooks
+# ========================
+.ipynb_checkpoints/
+
+# ========================
+# Environment & Secrets
+# ========================
+.env
+.env.*
+*.key
+
+# ========================
+# Misc
+# ========================
+*.log
+*.tmp

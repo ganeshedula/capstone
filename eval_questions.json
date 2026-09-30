@@ -1,0 +1,52 @@
+[
+  {
+    "question": "What is the capital of France?",
+    "answer": "Paris",
+    "distractors": ["London", "Berlin", "Madrid"]
+  },
+  {
+    "question": "What planet is closest to the Sun?",
+    "answer": "Mercury",
+    "distractors": ["Venus", "Earth", "Mars"]
+  },
+  {
+    "question": "What is the chemical symbol for water?",
+    "answer": "H2O",
+    "distractors": ["CO2", "NaCl", "O2"]
+  },
+  {
+    "question": "Who wrote Romeo and Juliet?",
+    "answer": "William Shakespeare",
+    "distractors": ["Charles Dickens", "Jane Austen", "Mark Twain"]
+  },
+  {
+    "question": "What is the largest organ in the human body?",
+    "answer": "The skin",
+    "distractors": ["The liver", "The brain", "The heart"]
+  },
+  {
+    "question": "How many continents are there on Earth?",
+    "answer": "Seven",
+    "distractors": ["Five", "Six", "Eight"]
+  },
+  {
+    "question": "What gas do plants absorb from the atmosphere?",
+    "answer": "Carbon dioxide",
+    "distractors": ["Oxygen", "Nitrogen", "Hydrogen"]
+  },
+  {
+    "question": "What is the speed of light in vacuum approximately?",
+    "answer": "300,000 kilometers per second",
+    "distractors": ["150,000 kilometers per second", "500,000 kilometers per second", "1,000,000 kilometers per second"]
+  },
+  {
+    "question": "Which element has the atomic number 1?",
+    "answer": "Hydrogen",
+    "distractors": ["Helium", "Lithium", "Oxygen"]
+  },
+  {
+    "question": "What is the powerhouse of the cell?",
+    "answer": "The mitochondria",
+    "distractors": ["The nucleus", "The ribosome", "The cell membrane"]
+  }
+]
