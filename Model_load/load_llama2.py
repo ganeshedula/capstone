@@ -21,7 +21,7 @@ def load_model(model_path: str, device: str, dtype: torch.dtype) -> torch.nn.Mod
     try:
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            torch_dtype=dtype,
+            dtype=dtype,
             low_cpu_mem_usage=True,
         )
         model = model.to(device)
@@ -29,6 +29,10 @@ def load_model(model_path: str, device: str, dtype: torch.dtype) -> torch.nn.Mod
         # accidental optimizer from fine-tuning it during ENN training.
         for parameter in model.parameters():
             parameter.requires_grad_(False)
+        # Some model repos serialize max_length=2048 in generation_config.
+        # Clear that inherited cap so callers' max_new_tokens is the sole limit.
+        if getattr(model, "generation_config", None) is not None:
+            model.generation_config.max_length = None
         model.eval()
         return model
     except Exception as e:
@@ -37,11 +41,13 @@ def load_model(model_path: str, device: str, dtype: torch.dtype) -> torch.nn.Mod
             print("Falling back to CPU...")
             model = AutoModelForCausalLM.from_pretrained(
                 model_path,
-                torch_dtype=torch.float32,
+                dtype=torch.float32,
                 low_cpu_mem_usage=True,
             ).to("cpu")
             for parameter in model.parameters():
                 parameter.requires_grad_(False)
+            if getattr(model, "generation_config", None) is not None:
+                model.generation_config.max_length = None
             model.eval()
             return model
         raise

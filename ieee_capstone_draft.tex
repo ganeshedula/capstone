@@ -1,0 +1,185 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage{multirow}
+\begin{document}
+
+\title{Layer-Contrastive Decoding with Epistemic Uncertainty and Self-Consistency for Small Language Models}
+
+\author{\IEEEauthorblockN{E. Ganesh Kumar Reddy, B. Sai Susmitha, P. Dhanush Datta, and E. Sri Vardhan Reddy}
+\IEEEauthorblockA{School of Computer Science and Engineering (SCOPE)\\VIT-AP University, Amaravati, Andhra Pradesh, India\\Student IDs: 23BCE8969, 23BCE9884, 23BCE9258, 23BCE8972}}
+
+\maketitle
+
+\begin{center}\small\textbf{Project Guide:} Palacharla Ravi Kumar, Assistant Professor Sr. Grade-2, SCOPE, VIT-AP University\end{center}
+
+\begin{abstract}
+Small language models can produce plausible but incorrect answers, while a fluent response does not by itself indicate that the model is certain or correct. This paper documents a local inference and reliability pipeline built around TinyLlama-1.1B-Chat-v1.0. The implemented system combines Decoding by Contrasting Layers (DoLa), which contrasts mature and dynamically selected premature-layer logits, with an Epistemic Neural Network (ENN) epinet trained on next-token features extracted from the English C4 corpus. At answer time, the repository supports direct Base and DoLa generation, ENN-based uncertainty scoring, plurality self-consistency over sampled candidates, and confidence-weighted voting. The ENN confidence weight is explicitly an entropy-derived heuristic rather than a calibrated probability of correctness. The repository contains a version-4 feature cache with 1,841 examples from 20 source-document identifiers and 2,048-dimensional mature and premature feature vectors, as well as a ten-item local question file. It does not contain the active PyTorch ENN checkpoint or saved benchmark outputs; consequently, no predictive performance, calibration, or comparative result is claimed here. The paper specifies the reproducible evaluation protocol and reports implementation facts separately from pending empirical evidence. The contribution is an inspectable small-model pipeline that makes layer contrast, epistemic sampling, and answer aggregation available for comparative evaluation, with explicit safeguards against interpreting uncertainty scores as correctness probabilities.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Large language models, factuality, contrastive decoding, epistemic uncertainty, epistemic neural networks, self-consistency, calibration.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Autoregressive language models estimate a distribution over the next token from preceding context. This objective supports broad language generation, but does not ensure factual correctness. Models may reproduce common misconceptions or produce unsupported completions, making it useful to study both answer quality and signals that could indicate uncertainty. TruthfulQA was designed to measure responses to questions likely to elicit popular false beliefs \cite{lin2022truthfulqa}.
+
+This capstone implements an inference and analysis pipeline for TinyLlama-1.1B-Chat-v1.0 \cite{zhang2024tinyllama}. The technical question is whether layer-contrastive decoding, an epinet-derived uncertainty signal, and aggregation of multiple sampled candidates can be evaluated together on short-form question answering. These components are available in code, but their effectiveness on the project's local evaluation set is not established by the repository artifacts examined for this draft.
+
+Conventional greedy decoding returns a single continuation and offers no answer-level aggregation. Sampling produces alternatives but needs a selection rule. DoLa contrasts later and earlier layer predictions to adjust next-token scores without external retrieval or additional base-model fine-tuning \cite{chuang2024dola}. Epistemic neural networks provide an interface for predictions indexed by a sampled epistemic variable, enabling uncertainty estimates alongside a conventional network \cite{osband2021enn}. Self-consistency uses agreement among sampled answers as a decision procedure; its original evidence concerns chain-of-thought reasoning and does not directly establish gains for this project's short-answer setting \cite{wang2023selfconsistency}.
+
+The implemented pipeline exposes these methods with a modest supervised feature-training stage. C4 next-token features train the Epinet, while the supplied local questions are used by the generation experiment runner. The gap addressed here is implementation-level: an end-to-end, inspectable experiment scaffold that connects layer contrast, epinet uncertainty, and answer voting in a small-model setting, while keeping evaluation distinct from claims of reliability.
+
+The contributions are:
+\begin{enumerate}
+\item A code-grounded description of a TinyLlama system combining dynamic DoLa layer selection and an Epinet applied to mature/premature hidden-state features.
+\item A reproducible evaluation design with Base/DoLa variants, self-consistency, confidence-weighted voting, and calibration diagnostics.
+\item An explicit accounting of available artifacts and missing evidence; no accuracy gain or calibration improvement is asserted without saved results.
+\end{enumerate}
+
+Section II reviews the relevant methods. Sections III--V define the task, data, and system. Sections VI--VIII describe the experimental protocol, metrics, and current evidence. Sections IX--XII discuss interpretation, limitations, and future work.
+
+\section{Related Work}
+\subsection{Factuality Evaluation}
+TruthfulQA contains 817 questions across 38 categories and evaluates whether models reproduce human misconceptions \cite{lin2022truthfulqa}. The repository uses the benchmark library's MC1 and MC2 modes in one evaluation path, but the active run's question count and output are not present. A separate local question file supports exact-match evaluation; it contains ten question/answer/distractor records and is not a substitute for a broad benchmark.
+
+\subsection{Layer-Contrastive Decoding}
+DoLa contrasts mature-layer predictions against premature-layer predictions and dynamically selects a premature layer based on distributional divergence \cite{chuang2024dola}. The project adapts this strategy to TinyLlama by using the final transformer block as the mature layer and selecting from blocks $\{0,4,8,12,16,20\}$ using Jensen--Shannon divergence. This is a decoding modification, not a separate model trained from scratch.
+
+\subsection{Epistemic Estimation and Candidate Aggregation}
+Osband \emph{et al.} formulate ENNs as models whose prediction depends on input and an epistemic index, enabling joint predictions and uncertainty-sensitive behavior \cite{osband2021enn}. The code implements a frozen random prior plus a trainable indexed MLP epinet. Its sampling-based predictive and epistemic quantities are distinct from a calibrated probability of answer correctness. Calibration of predictive confidence is a separate empirical property; Guo \emph{et al.} discuss calibration and temperature scaling for neural classifiers \cite{guo2017calibration}.
+
+Self-consistency samples multiple outputs and selects a consistent answer, originally evaluated with chain-of-thought reasoning \cite{wang2023selfconsistency}. Here plurality is applied to normalized short answers; the ENN-weighted variant sums entropy-derived candidate weights. Whether either approach improves factual answer accuracy in this project remains to be measured.
+
+\subsection{Research Gap}
+The cited works motivate separate methods, but do not provide results for this exact combination on the local TinyLlama configuration. The project provides an implementation scaffold for that comparison. A contribution in performance, reliability, or calibration cannot be concluded until adequate held-out results are produced.
+
+\section{Problem Formulation}
+Let a prompt be $q$ and let a causal language model with parameters $\theta$ produce a candidate sequence $a=(a_1,\ldots,a_T)$. At decoding position $t$, let $h^m_t$ denote the mature representation and $h^{p}_t$ the representation of a selected premature layer. With language-model head $W$ and contrast coefficient $\alpha$, the DoLa score is
+\begin{equation}
+ \ell^{D}_t = W h^m_t - \alpha W h^{p}_t,\qquad p^D_t=\operatorname{softmax}(\ell^{D}_t).
+ \label{eq:dola}
+\end{equation}
+Here, $h^m_t$ and $h^p_t$ are the post-normalization hidden states used by the language-model head, $\ell^D_t$ is the vocabulary-logit vector, and $p^D_t$ is its normalized distribution. For candidate premature layer $j$, the code computes $p^j_t=\operatorname{softmax}(W h^j_t)$ and selects $j_t^*=\arg\max_j \operatorname{JSD}(p^D_{m,t}\|p^j_t)$, where $p^D_{m,t}=\operatorname{softmax}(W h^m_t)$ is the mature-layer distribution and $\operatorname{JSD}(p\|q)=\tfrac12\operatorname{KL}(p\|m)+\tfrac12\operatorname{KL}(q\|m)$ with $m=(p+q)/2$. The selected $h^p_t$ is the state at $j_t^*$. The implementation's configured default is $\alpha=0.05$ for the main CLI and experiment runner; this is a configuration value, not an empirically selected optimum.
+
+For the Epinet, define $x_t=[h^m_t;h^p_t]$ and draw epistemic indices $z_k$. Its frozen prior branch produces $g_0(x_t,z_k)$ and its trainable branch produces $g_\phi(x_t,z_k)$, both in the hidden dimension and projected to vocabulary space by $W$. Training minimizes sampled next-token cross-entropy over the training examples:
+\begin{equation}
+ \mathcal{L}(\phi)=\frac{1}{|\mathcal{D}|K}\sum_{(x_t,y_t)\in\mathcal{D}}\sum_{k=1}^{K}\operatorname{CE}\left(\ell^D_t+W[g_0(x_t,z_k)+g_\phi(x_t,z_k)],y_t\right),
+ \label{eq:loss}
+\end{equation}
+where $\mathcal{D}$ is the set of training feature/label pairs, $y_t$ is the observed next token, $K$ is the number of epistemic samples, and $\phi$ denotes trainable epinet parameters only. At inference, sampled predictive distributions $p_k$ yield mean prediction $\bar p=K^{-1}\sum_k p_k$, predictive entropy $H(\bar p)$, mean sample entropy $K^{-1}\sum_k H(p_k)$, and the implementation's epistemic proxy $\max(0,H(\bar p)-K^{-1}\sum_k H(p_k))$. These are token-distribution diagnostics, not direct estimates of answer-level correctness.
+
+Given $N$ candidate answers, the unweighted decision is the plurality answer after surface normalization. For the weighted procedure, each candidate receives $c_i=\operatorname{clip}(1-H_i/\ln |V|,0,1)$, where $H_i$ is the mean predictive entropy over that candidate's generated answer-token positions and $|V|$ is tokenizer vocabulary size. The natural logarithm matches the entropy computation in the code. This score weights votes but is not treated as a calibrated correctness probability.
+
+\section{Dataset and Preprocessing}
+The code loads English C4 training text from the Hugging Face dataset identifier \texttt{allenai/c4}, configuration \texttt{en}, split \texttt{train}, when local usable shards are unavailable \cite{raffel2020t5}. The cache records its requested count and processing settings, but not a durable source revision or source-document text. Therefore provenance and exact sampled records should be saved with a final run.
+
+\begin{table}[t]
+\caption{AVAILABLE DATA ARTIFACTS}
+\label{tab:data}
+\centering\small
+\begin{tabular}{p{0.22\columnwidth}p{0.32\columnwidth}p{0.36\columnwidth}}
+\toprule
+Artifact & Verified contents & Role / caveat\\
+\midrule
+C4 feature cache & 1,841 rows; 2,048 mature + 2,048 premature dimensions; 868 unique observed labels; 20 document IDs & Cache metadata: version 4, requested 20 texts, max length 128, validation fraction 0.1. Source revision not recorded.\\
+Local QA file & 10 records with question, answer, distractors & Exact-match script input; not a validated broad benchmark.\\
+TruthfulQA & Dataset loaded at evaluation time & No saved local run results or evaluated subset metadata.\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For each text, tokenization truncates at 128 tokens under the saved cache configuration. The first 20\% of token positions are skipped; the remaining mature and premature features are paired with the following token as label. The cache stores the resulting float32 features and int32 labels. Train/validation assignment is by document identifier using a seeded permutation, preventing tokens from one document crossing the split. With 20 identifiers and a 0.1 fraction, the code selects two validation documents. The current cache does not record the resulting per-split row counts, which should be emitted alongside the final experiment. No geographic, temporal, or spatial structure is used.
+
+\section{Proposed Method}
+\subsection{Pipeline}
+The pipeline has four stages: (1) load TinyLlama and tokenizer; (2) extract mature/premature C4 features and next-token labels; (3) train the PyTorch Epinet while the base language model and prior branch remain fixed; and (4) generate and evaluate answers with selected decoding and voting strategies. Figure~\ref{fig:pipeline} specifies a suitable architecture figure for a submission; no actual figure artifact is included in the repository.
+
+\begin{figure}[t]
+\centering\fbox{\parbox{0.9\columnwidth}{\centering C4 text $\rightarrow$ TinyLlama hidden states $\rightarrow$ dynamic premature-layer selection $\rightarrow$ paired features and next-token labels $\rightarrow$ Epinet training\par\vspace{2mm}Prompt $\rightarrow$ Base / DoLa candidate generation $\rightarrow$ optional ENN uncertainty scoring $\rightarrow$ plurality or weighted vote}}
+\caption{System pipeline to be rendered as a vector diagram. The two paths share the frozen TinyLlama backbone; the upper path trains the Epinet and the lower path performs answer inference and aggregation.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{DoLa Layer Selection}
+For each token position, the implementation projects the mature output and each candidate premature hidden state into vocabulary logits. It computes Jensen--Shannon divergence between the mature and premature softmax distributions, and selects the candidate layer with maximum divergence. The candidate blocks are $0,4,8,12,16,20$ and the mature block is 21 for the documented 22-layer TinyLlama configuration. The selected logits are contrasted using (1). For decoding, logits are normalized by softmax; for scoring, log-softmax is used.
+
+\subsection{Epinet Architecture and Training}
+The input is the concatenation of two 2,048-dimensional representations. Each prior and trainable indexed MLP maps this 4,096-dimensional input through two ReLU hidden layers (configured width 512) to an output of hidden size 2,048 and epistemic index dimension 6. The fixed prior output is added to the learnable output. The latter is optimized with AdamW; configured learning rate is $10^{-4}$, weight decay $10^{-4}$, gradient norm clipping 1.0, batch size 1, two epochs, and three epistemic samples per training example. A ReduceLROnPlateau scheduler halves the learning rate after a one-epoch plateau. These describe repository defaults, not independently verified successful training settings. The active checkpoint expected by the runner is absent from the repository snapshot.
+
+\subsection{Candidate Generation and Voting}
+The experiment runner uses temperature 0.7, nucleus probability 0.9, and a maximum of 16 new tokens by default. Seeds are derived from a base seed, question index, and candidate offset. Plain self-consistency normalizes surface form and returns a plurality answer, resolving ties by first occurrence. The ENN variant scores generated candidates and chooses the answer with greatest summed heuristic confidence. The winning vote's normalized score is a share of total vote weight, not a probability calibrated against correctness.
+
+\subsection{Complexity}
+For sequence length $T$, vocabulary size $V$, hidden size $H$, and $L$ selected candidate layers, explicit layer-logit projection and comparison has a leading cost proportional to $O(LTVH)$ in addition to the transformer forward pass. Epinet inference includes indexed MLP evaluation and projection to vocabulary logits; its output projection is proportional to $O(TVH)$ per epistemic sample. Exact runtime and memory depend on batching, model implementation, device, and caching and are [TO BE PROVIDED]. Parameter counts for the trainable branch and total model should be recorded from the loaded checkpoint before publication.
+
+\section{Experimental Protocol}
+\subsection{Implementation and Splits}
+The base model is the repository's local TinyLlama-1.1B-Chat-v1.0 checkpoint. The feature cache records 20 requested C4 texts, maximum sequence length 128, and a 0.1 document-level validation fraction. The local generation runner reads ten labeled questions. Inference hardware, software versions for the final run, checkpoint provenance, and exact training completion status are [TO BE PROVIDED]. The Git-ignored \texttt{checkpoints/enn\_best.pt} file was not present in this workspace; the tracked JAX checkpoint is legacy and is not consumed by the active PyTorch path.
+
+\subsection{Comparison Conditions}
+The code offers Base, Base+DoLa, Base+ENN, Base+DoLa+ENN, Base+DoLa+self-consistency, and Base+DoLa+ENN+self-consistency. Sample-count sweeps default to $N\in\{1,3,5,10\}$. Generation uses the same local prompts and candidate limits across conditions where applicable. The main evaluation module additionally scores answer options using TruthfulQA MC1/MC2. A fair report must state the exact benchmark split and number of items, use identical prompts and model weights, and separate tuning data from final test data.
+
+\subsection{Metrics}
+For $M$ labeled questions, exact-match accuracy is $M^{-1}\sum_{i=1}^{M} \mathbb{1}[\hat y_i=y_i]$. For binary correctness labels $r_i$ and confidence $c_i$, define $\tilde c_i=\operatorname{clip}(c_i,10^{-8},1-10^{-8})$, matching the implementation's numerical clipping. Expected calibration error over $B$ bins is
+\begin{equation}
+ \mathrm{ECE}=\sum_{b=1}^{B}\frac{|S_b|}{M}\left|\operatorname{acc}(S_b)-\operatorname{conf}(S_b)\right|,
+\end{equation}
+where $S_b$ is the set of examples assigned to bin $b$, and $\operatorname{acc}(S_b)$ and $\operatorname{conf}(S_b)$ are the mean correctness and mean clipped confidence in that bin. The implementation uses ten equal-width bins. It also reports the binary Brier score $M^{-1}\sum_{i=1}^{M}(\tilde c_i-r_i)^2$ and binary negative log-likelihood $-M^{-1}\sum_{i=1}^{M}[r_i\ln\tilde c_i+(1-r_i)\ln(1-\tilde c_i)]$. These metrics evaluate confidence behavior only if confidence has a meaningful interpretation; entropy scores and vote shares require empirical calibration checks. TruthfulQA MC1/MC2 are benchmark-specific scoring metrics and should be described according to the benchmark protocol \cite{lin2022truthfulqa}.
+
+\section{Results and Analysis}
+No experiment result files, active PyTorch checkpoint, or plots are present in the repository snapshot. The verified cache properties in Table~\ref{tab:data} are data-pipeline facts, not evidence of model quality. Accordingly, accuracy, MC1/MC2, calibration, latency, and comparative gains remain unreported.
+
+\begin{table}[t]
+\caption{STATUS OF PERFORMANCE RESULTS}
+\label{tab:results}\centering\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}p{0.34\columnwidth}*{4}{>{\centering\arraybackslash}p{0.13\columnwidth}}@{}}
+\toprule
+Method & Acc. & ECE & Brier & $N$\\
+\midrule
+Base & Not run & Not run & Not run & --\\
+Base+DoLa & Not run & Not run & Not run & --\\
+DoLa+self-consistency & Not run & Not run & Not run & --\\
+DoLa+ENN+weighted vote & Not run & Not run & Not run & --\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+``Not run'' indicates that no saved evaluation output was available for that condition; it is not a zero score. Populate the metrics and $N$ from reproducible runs before making a performance comparison. For a ten-item set, results should be interpreted as exploratory; repeated-seed variation or uncertainty intervals are needed for stronger comparisons.
+
+\subsection{Ablation Study}
+The code supports component comparisons and candidate-count variation, but no ablation output is available. Ablation experiments are planned as part of future evaluation. At minimum, compare Base, DoLa, DoLa with self-consistency, and DoLa with ENN-weighted self-consistency using identical questions and candidate counts. A distinct ENN logit-blending ablation should state its weight; the configured default in the main pipeline is zero, so the ENN correction does not affect combined logits at that setting.
+
+\subsection{Error and Reliability Analysis}
+No prediction file is available for sample-level error analysis. The experiment code can save candidate text, votes, and uncertainty diagnostics; those outputs should be inspected for normalization collisions, exact-match false negatives, invalid or empty answers, and cases where high heuristic confidence accompanies an incorrect answer. The configured threshold of 0.5 is a decision threshold, not a validated operating point. Calibration curves and risk--coverage analysis must be generated from held-out data before assigning reliability labels.
+
+\section{Discussion}
+The implementation connects three distinct mechanisms: layer-level contrast modifies token scores, the Epinet adds sampled corrections and produces distributional uncertainty diagnostics, and answer-level voting aggregates candidate strings. Their outputs operate at different levels and should not be conflated. In particular, token entropy, mean predictive entropy over a candidate, first-token maximum probability, plurality agreement, and correctness probability are not interchangeable quantities. The code documentation appropriately treats entropy-derived ENN weighting as a heuristic. Results on a ten-item custom set would not establish general factuality or calibrated reliability; external benchmark evaluation and larger held-out samples are necessary.
+
+\section{Limitations and Future Work}
+The available supervised feature cache contains only 20 source-document identifiers and 1,841 token examples. Its original source revision is not embedded in the cache. The custom question file has ten records, and no evaluation results or active ENN checkpoint are included. These constraints prevent claims about generalization, statistical significance, or deployment cost. The current system also uses exact-match correctness, which can penalize semantically correct paraphrases, and its entropy-derived weight has no demonstrated calibration.
+
+Future work should preserve C4 identifiers and dataset revision; create train, validation, and test question partitions; train and archive the current PyTorch checkpoint; evaluate on the full TruthfulQA protocol and additional held-out data; report repeated seeds and uncertainty intervals; compare with untuned and tuned baselines; and assess reliability with calibration and risk--coverage curves. Ablations should isolate layer contrast, ENN correction, voting, and confidence weighting. Runtime, memory, parameter count, and decoding cost should be profiled on stated hardware. Calibration methods may be considered only after a distinct calibration set is reserved.
+
+\section{Conclusion}
+This paper describes a repository-grounded TinyLlama inference pipeline that combines dynamic layer-contrastive decoding, an Epinet trained on C4 next-token features, and optional candidate self-consistency. Code and cache inspection verifies the architecture settings and a small set of input artifacts, but no active PyTorch checkpoint or experiment outputs were available to establish model performance. The resulting manuscript therefore defines the system and an evaluation protocol without asserting gains in factuality or reliability. A completed benchmark run with archived predictions, split provenance, and calibration analysis is required before the work can support empirical conclusions.
+
+\section*{Acknowledgment}
+The authors acknowledge the guidance of Palacharla Ravi Kumar, Assistant Professor Sr. Grade-2, SCOPE, VIT-AP University.
+
+\begin{thebibliography}{00}
+\bibitem{lin2022truthfulqa} S. Lin, J. Hilton, and O. Evans, ``TruthfulQA: Measuring how models mimic human falsehoods,'' in \emph{Proc. 60th Annu. Meeting Assoc. Comput. Linguistics (ACL)}, 2022, pp. 3214--3252, doi: 10.18653/v1/2022.acl-long.229.
+\bibitem{zhang2024tinyllama} P. Zhang, G. Zeng, T. Wang, and W. Lu, ``TinyLlama: An open-source small language model,'' \emph{arXiv:2401.02385}, 2024.
+\bibitem{chuang2024dola} Y.-S. Chuang, Y. Xie, H. Luo, Y. Kim, J. Glass, and P. He, ``DoLa: Decoding by contrasting layers improves factuality in large language models,'' in \emph{Proc. Int. Conf. Learn. Represent. (ICLR)}, 2024.
+\bibitem{osband2021enn} I. Osband, Z. Wen, S. M. Asghari, V. Dwaracherla, M. Ibrahimi, X. Lu, and B. Van Roy, ``Epistemic neural networks,'' \emph{arXiv:2107.08924}, 2021.
+\bibitem{wang2023selfconsistency} X. Wang, J. Wei, D. Schuurmans, Q. V. Le, E. H. Chi, and D. Zhou, ``Self-consistency improves chain of thought reasoning in language models,'' in \emph{Proc. Int. Conf. Learn. Represent. (ICLR)}, 2023.
+\bibitem{guo2017calibration} C. Guo, G. Pleiss, Y. Sun, and K. Q. Weinberger, ``On calibration of modern neural networks,'' in \emph{Proc. 34th Int. Conf. Mach. Learn. (ICML)}, 2017, pp. 1321--1330.
+\bibitem{raffel2020t5} C. Raffel \emph{et al.}, ``Exploring the limits of transfer learning with a unified text-to-text transformer,'' \emph{J. Mach. Learn. Res.}, vol. 21, no. 140, pp. 1--67, 2020.
+\end{thebibliography}
+
+\end{document}

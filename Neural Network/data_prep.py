@@ -50,7 +50,7 @@ MODEL_DIR  = os.path.join(_PROJECT, "models", "TinyLlama-1.1B-Chat-v1.0")
 CACHE_PATH = os.path.join(_HERE, "features_cache.npz")
 
 # Cache version — bump whenever the feature format changes
-_CACHE_VERSION = 3  # v3 fixes final-layer double-RMSNorm features
+_CACHE_VERSION = 4  # v4 stores document IDs for leakage-safe splitting
 
 
 # ---------------------------------------------------------------------------
@@ -164,14 +164,16 @@ def extract_features_from_texts(
     normed_mature    : float32  (N, hidden_size)
     normed_premature : float32  (N, hidden_size)
     next_token_ids   : int32    (N,)
+    document_ids     : int32    (N,), source text index for leakage-safe splitting
     """
     all_mature:    List[np.ndarray] = []
     all_premature: List[np.ndarray] = []
     all_labels:    List[int]        = []
+    all_doc_ids:   List[int]        = []
 
     stats = DoLaStats()
 
-    for text in tqdm(texts, desc="[data_prep] Extracting features"):
+    for doc_id, text in enumerate(tqdm(texts, desc="[data_prep] Extracting features")):
         enc = tokenizer(
             text,
             return_tensors="pt",
@@ -205,6 +207,7 @@ def extract_features_from_texts(
             all_mature.append(m_h)
             all_premature.append(p_h)
             all_labels.append(next_tok)
+            all_doc_ids.append(doc_id)
 
     mature_arr    = np.array(all_mature,    dtype=np.float32)   # (N, H)
     premature_arr = np.array(all_premature, dtype=np.float32)   # (N, H)
@@ -214,7 +217,7 @@ def extract_features_from_texts(
     print(f"[data_prep] Premature layer statistics:")
     print(stats.summary())
 
-    return mature_arr, premature_arr, labels_arr
+    return mature_arr, premature_arr, labels_arr, np.asarray(all_doc_ids, dtype=np.int32)
 
 
 # ---------------------------------------------------------------------------
@@ -249,32 +252,38 @@ def prepare_enn_features(
     if not force_recompute and os.path.exists(cache_path):
         data = np.load(cache_path, allow_pickle=True)
 
-        # Version check
+        # Version and extraction-parameter checks prevent stale features from
+        # silently surviving changes to sample count or tokenization length.
         version = int(data["version"][0]) if "version" in data else 1
-        if version < _CACHE_VERSION:
+        cache_matches = (
+            version == _CACHE_VERSION
+            and "doc_ids" in data
+            and "n_c4_samples" in data
+            and int(data["n_c4_samples"][0]) == n_c4_samples
+            and "max_length" in data
+            and int(data["max_length"][0]) == max_length
+            and "val_fraction" in data
+            and float(data["val_fraction"][0]) == float(val_fraction)
+        )
+        if not cache_matches:
             print(
-                f"[data_prep] Cache version mismatch (v{version} vs v{_CACHE_VERSION}). "
+                f"[data_prep] Cache version or extraction settings mismatch "
+                f"(cache v{version}, expected v{_CACHE_VERSION}). "
                 f"Re-extracting features…"
             )
         else:
             mature    = data["mature"]
             premature = data["premature"]
             labels    = data["labels"]
-            N         = len(labels)
-            print(f"[data_prep] Loaded {N} cached samples (v{version})")
-
-            # Split
-            n_val = max(1, int(N * val_fraction))
-            return (
-                mature[n_val:],    premature[n_val:],    labels[n_val:],
-                mature[:n_val],    premature[:n_val],    labels[:n_val],
-            )
+            doc_ids   = data["doc_ids"]
+            print(f"[data_prep] Loaded {len(labels)} cached samples (v{version})")
+            return _split_by_document(mature, premature, labels, doc_ids, val_fraction)
 
     # --- Extract from C4 ---
     print(f"[data_prep] Extracting features from {n_c4_samples} C4 samples…")
     texts = load_c4_texts(n_c4_samples)
 
-    mature, premature, labels = extract_features_from_texts(
+    mature, premature, labels, doc_ids = extract_features_from_texts(
         model, tokenizer, texts, device, max_length=max_length,
     )
 
@@ -285,14 +294,31 @@ def prepare_enn_features(
         mature=mature,
         premature=premature,
         labels=labels,
+        doc_ids=doc_ids,
         version=np.array([_CACHE_VERSION]),
+        n_c4_samples=np.array([n_c4_samples]),
+        max_length=np.array([max_length]),
+        val_fraction=np.array([val_fraction]),
     )
     print(f"[data_prep] Features cached → {cache_path}")
 
-    # Split
-    N     = len(labels)
-    n_val = max(1, int(N * val_fraction))
+    return _split_by_document(mature, premature, labels, doc_ids, val_fraction)
+
+
+def _split_by_document(mature, premature, labels, doc_ids, val_fraction):
+    """Split whole source texts so tokens from one document cannot cross splits."""
+    unique_docs = np.unique(doc_ids)
+    if len(unique_docs) < 2:
+        raise ValueError(
+            "At least two C4 documents with usable tokens are required "
+            "for a document-level train/validation split."
+        )
+    n_val_docs = min(len(unique_docs) - 1, max(1, int(round(len(unique_docs) * val_fraction))))
+    shuffled_docs = np.random.default_rng(42).permutation(unique_docs)
+    val_docs = shuffled_docs[:n_val_docs]
+    val_mask = np.isin(doc_ids, val_docs)
+    train_mask = ~val_mask
     return (
-        mature[n_val:],    premature[n_val:],    labels[n_val:],
-        mature[:n_val],    premature[:n_val],    labels[:n_val],
+        mature[train_mask], premature[train_mask], labels[train_mask],
+        mature[val_mask], premature[val_mask], labels[val_mask],
     )

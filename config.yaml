@@ -13,11 +13,12 @@ training:
   num_epistemic_samples: 3
   checkpoint_every: 1
 dola:
-  alpha: 1.0
+  alpha: 0.05
   mature_layer: null  # null selects TinyLlama's final transformer block
 evaluation:
   truthfulqa_questions: 10
   top_k_tokens: 10
+  enn_weight: 0.0  # validation sweep found positive weights hurt C4 next-token loss
 paths:
   results: results
   checkpoints: checkpoints

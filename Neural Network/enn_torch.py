@@ -6,7 +6,6 @@ with final-RMSNorm-projected premature features.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -81,6 +80,8 @@ def train_enn(mature_features: np.ndarray, premature_features: np.ndarray, label
     """Train only the learnable ENN using CE(DoLa logits + ENN logits)."""
     if len(labels) == 0:
         raise ValueError("No ENN training tokens were extracted.")
+    if epochs < 1 or batch_size < 1 or n_z_samples < 1:
+        raise ValueError("epochs, batch_size, and n_z_samples must all be positive.")
     device = device or ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     h = mature_features.shape[-1]
     if premature_features.shape[-1] != h or vocab_head_weight.shape[1] != h:
@@ -92,12 +93,23 @@ def train_enn(mature_features: np.ndarray, premature_features: np.ndarray, label
     mat = torch.from_numpy(mature_features).to(device)
     prem = torch.from_numpy(premature_features).to(device)
     y = torch.from_numpy(labels.astype(np.int64)).to(device)
+    has_validation = val_mature is not None and val_premature is not None and val_labels is not None and len(val_labels) > 0
+    if has_validation:
+        val_x = torch.from_numpy(np.concatenate([val_mature, val_premature], axis=-1)).to(device)
+        val_mat_t = torch.from_numpy(val_mature).to(device)
+        val_prem_t = torch.from_numpy(val_premature).to(device)
+        val_y = torch.from_numpy(np.asarray(val_labels, dtype=np.int64)).to(device)
+        # Reuse the same epistemic indices at every epoch for a comparable
+        # validation signal; training continues to draw fresh indices.
+        val_generator = torch.Generator(device="cpu").manual_seed(seed + 1)
+        val_z = [torch.randn(net.z_dim, generator=val_generator).to(device) for _ in range(n_z_samples)]
     head = torch.from_numpy(vocab_head_weight).to(device=device, dtype=torch.float32)
     train_losses, val_losses = [], []
     best = float("inf")
+    best_state = None
     checkpoint_dir = Path(checkpoint_path).parent if checkpoint_path else None
     for epoch in range(epochs):
-        net.train(); order = torch.randperm(len(y), device=device); running = 0.0; steps = 0
+        net.train(); order = torch.randperm(len(y), device=device); running = 0.0; seen = 0
         for start in range(0, len(y), batch_size):
             idx = order[start:start + batch_size]
             optimizer.zero_grad(set_to_none=True)
@@ -109,14 +121,40 @@ def train_enn(mature_features: np.ndarray, premature_features: np.ndarray, label
                 loss = loss + F.cross_entropy(dola + enn_logits, y[idx]) / n_z_samples
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.learnable.parameters(), max_norm=1.0)
-            optimizer.step(); running += float(loss.detach().cpu()); steps += 1
-        mean_loss = running / max(steps, 1); train_losses.append(mean_loss)
-        scheduler.step(mean_loss)
-        print(f"[ENN] epoch {epoch + 1}/{epochs}: train_loss={mean_loss:.4f}; trainable={sum(p.numel() for p in net.learnable.parameters()):,}")
+            optimizer.step()
+            batch_n = len(idx)
+            running += float(loss.detach().cpu()) * batch_n
+            seen += batch_n
+        mean_loss = running / max(seen, 1)
+        train_losses.append(mean_loss)
+
+        val_loss = None
+        if has_validation:
+            net.eval()
+            val_total = 0.0
+            with torch.inference_mode():
+                for start in range(0, len(val_y), batch_size):
+                    stop = start + batch_size
+                    vm, vp, vx, vy = val_mat_t[start:stop], val_prem_t[start:stop], val_x[start:stop], val_y[start:stop]
+                    vdola = vm.float() @ head.T - alpha * (vp.float() @ head.T)
+                    sample_losses = [F.cross_entropy(vdola + net(vx.float(), z) @ head.T, vy) for z in val_z]
+                    val_total += float(torch.stack(sample_losses).mean().cpu()) * len(vy)
+            val_loss = val_total / len(val_y)
+            val_losses.append(val_loss)
+
+        monitored_loss = val_loss if val_loss is not None else mean_loss
+        scheduler.step(monitored_loss)
+        val_report = f"; val_loss={val_loss:.4f}" if val_loss is not None else ""
+        print(f"[ENN] epoch {epoch + 1}/{epochs}: train_loss={mean_loss:.4f}{val_report}; trainable={sum(p.numel() for p in net.learnable.parameters()):,}")
         if checkpoint_dir:
             save_enn(net, str(checkpoint_dir / f"enn_epoch_{epoch + 1}.pt"), enn_hidden_dim)
-            if mean_loss < best:
-                best = mean_loss; save_enn(net, checkpoint_path, enn_hidden_dim)
+        if monitored_loss < best:
+            best = monitored_loss
+            best_state = {key: value.detach().cpu().clone() for key, value in net.state_dict().items()}
+            if checkpoint_path:
+                save_enn(net, checkpoint_path, enn_hidden_dim)
+    if best_state is not None:
+        net.load_state_dict(best_state)
     net.eval()
     # The historical two-return convention is retained for callers; both paths
     # are represented by the one Epinet module and remain separately frozen/trainable.

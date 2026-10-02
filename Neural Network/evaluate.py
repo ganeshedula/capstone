@@ -31,6 +31,50 @@ if _HERE not in sys.path:
 # Answer scoring
 # ---------------------------------------------------------------------------
 
+def _encode_question_answer(tokenizer, question: str, answer: str, device: str,
+                            max_length: int = 512):
+    """Encode a completion in the same chat format used by interactive inference.
+
+    Returns input ids plus the answer-token span ``[answer_start, answer_end)``.
+    The template terminator (normally EOS) is excluded from answer scoring.
+    """
+    if getattr(tokenizer, "chat_template", None):
+        prefix_text = tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": "You are a helpful assistant. Give concise, direct answers."},
+                {"role": "user", "content": question},
+            ], tokenize=False, add_generation_prompt=True,
+        )
+        full_text = tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": "You are a helpful assistant. Give concise, direct answers."},
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": answer},
+            ], tokenize=False,
+        )
+    else:
+        prefix_text = f"Q: {question}\nA: "
+        full_text = f"Q: {question}\nA: {answer}"
+
+    full_ids = tokenizer(full_text, return_tensors="pt", truncation=True,
+                         max_length=max_length)["input_ids"]
+    prefix_ids = tokenizer(prefix_text, return_tensors="pt", truncation=True,
+                            max_length=max_length)["input_ids"][0].tolist()
+    ids = full_ids[0].tolist()
+    common = 0
+    for prefix_token, full_token in zip(prefix_ids, ids):
+        if prefix_token != full_token:
+            break
+        common += 1
+    answer_end = len(ids)
+    if tokenizer.eos_token_id is not None:
+        for token_index in range(common, len(ids)):
+            if ids[token_index] == tokenizer.eos_token_id:
+                answer_end = token_index
+                break
+    input_ids = full_ids.to(device)
+    return input_ids, common, answer_end
+
 def _log_likelihood(
     model,
     tokenizer,
@@ -39,35 +83,19 @@ def _log_likelihood(
     device: str,
     logit_fn: Optional[Callable] = None,
     already_log_scores: bool = False,
+    reduction: str = "mean",
 ) -> float:
     """
     Calculate mean per-token answer log-probability.
 
-    Prompt:   Q: {question}\\nA: {answer}
-    Only answer tokens (after "A: ") contribute to the score.
+    Uses the model chat template when available and scores answer tokens only.
 
     If already_log_scores=False  →  logit_fn returns raw logits  →  log_softmax applied.
     If already_log_scores=True   →  logit_fn already returns log-probs  →  used directly.
     """
-    prompt   = f"Q: {question}\nA: {answer}"
-    q_prefix = f"Q: {question}\nA: "
-
-    enc = tokenizer(
-        prompt,
-        return_tensors="pt",
-        truncation=True,
-        max_length=512,
-    ).to(device)
-
-    q_enc = tokenizer(
-        q_prefix,
-        return_tensors="pt",
-        truncation=True,
-        max_length=512,
+    input_ids, answer_start, answer_end = _encode_question_answer(
+        tokenizer, question, answer, device,
     )
-
-    input_ids = enc["input_ids"]       # (1, T)
-    q_len     = q_enc["input_ids"].shape[1]
 
     # --- Get scores ---
     if logit_fn is not None:
@@ -84,21 +112,23 @@ def _log_likelihood(
     log_scores = log_scores[0]  # (T, V)
 
     # --- Sum log-probs over answer tokens ---
-    ans_start = q_len - 1        # position whose *next* token is the first answer token
-    ans_end   = input_ids.shape[1] - 1
-
-    if ans_end <= ans_start:
+    if answer_end <= answer_start:
         return 0.0
 
     token_scores = []
-    for pos in range(ans_start, ans_end):
-        next_tok     = input_ids[0, pos + 1].item()
+    for token_index in range(answer_start, answer_end):
+        pos = token_index - 1
+        next_tok = input_ids[0, token_index].item()
         token_score  = log_scores[pos, next_tok]
         token_scores.append(float(token_score.detach()))
 
     if not token_scores:
         return 0.0
 
+    if reduction == "sum":
+        return float(np.sum(token_scores))
+    if reduction != "mean":
+        raise ValueError("reduction must be 'mean' or 'sum'")
     return float(np.mean(token_scores))
 
 
@@ -235,19 +265,13 @@ def _run_eval(
         choices2    = mc2_targets["choices"]
         labels2     = mc2_targets["labels"]
 
-        scores2 = [score_fn(question, c) for c in choices2]
-
-        correct_scores   = [s for s, l in zip(scores2, labels2) if l == 1]
-        incorrect_scores = [s for s, l in zip(scores2, labels2) if l == 0]
-
-        if correct_scores and incorrect_scores:
-            n_correct = sum(
-                1 for c in correct_scores
-                for i in incorrect_scores
-                if c > i
-            )
-            n_total = len(correct_scores) * len(incorrect_scores)
-            mc2_ratio_sum += n_correct / n_total
+        # TruthfulQA MC2 is the normalized probability mass assigned to
+        # correct answers, using sequence (summed-token) log likelihoods.
+        scores2 = np.asarray([score_fn(question, c, reduction="sum") for c in choices2], dtype=np.float64)
+        scores2 -= np.max(scores2)
+        probs2 = np.exp(scores2)
+        probs2 /= probs2.sum()
+        mc2_ratio_sum += float(probs2[np.asarray(labels2, dtype=bool)].sum())
 
         all_scores.extend(scores1)
         total += 1
@@ -270,11 +294,12 @@ def evaluate_baseline(
 ) -> Dict[str, float]:
     """Baseline TinyLlama evaluation."""
 
-    def score_fn(q, a):
+    def score_fn(q, a, reduction="mean"):
         return _log_likelihood(
             model, tokenizer, q, a, device,
             logit_fn=lambda ids: _baseline_logit_fn(model, ids),
             already_log_scores=False,
+            reduction=reduction,
         )
 
     return _run_eval(
@@ -297,7 +322,7 @@ def evaluate_dola(
     if stats is None:
         stats = DoLaStats()
 
-    def score_fn(q, a):
+    def score_fn(q, a, reduction="mean"):
         return _log_likelihood(
             model, tokenizer, q, a, device,
             logit_fn=lambda ids: _dola_logit_fn(
@@ -307,6 +332,7 @@ def evaluate_dola(
                 stats=stats,
             ),
             already_log_scores=True,   # DoLa returns log_softmax
+            reduction=reduction,
         )
 
     result = _run_eval(
@@ -333,7 +359,7 @@ def evaluate_dola_enn(
     if stats is None:
         stats = DoLaStats()
 
-    def score_fn(q, a):
+    def score_fn(q, a, reduction="mean"):
         return _log_likelihood(
             model, tokenizer, q, a, device,
             logit_fn=lambda ids: _dola_enn_logit_fn(
@@ -346,6 +372,7 @@ def evaluate_dola_enn(
                 stats=stats,
             ),
             already_log_scores=True,   # returns log_softmax
+            reduction=reduction,
         )
 
     result = _run_eval(

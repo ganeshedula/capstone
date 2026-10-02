@@ -208,15 +208,15 @@ python main.py --n-c4 50 --n-questions 20 --epochs 2
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--mode` | string | `all` | Pipeline mode: `all`, `extract`, `train`, `eval`, `ask`, `dola-sweep`, `ablation`, `before-after`, `c4-eval` |
-| `--n-c4` | int | `600` | Number of C4 samples to stream for feature extraction |
-| `--n-questions` | int | `100` | Number of TruthfulQA questions to evaluate |
+| `--n-c4` | int | `20` | Number of C4 samples to stream for feature extraction (from `config.yaml`) |
+| `--n-questions` | int | `10` | Number of TruthfulQA questions to evaluate (from `config.yaml`) |
 | `--start-idx` | int | `0` | Starting index in TruthfulQA dataset (for val/test split) |
-| `--epochs` | int | `5` | ENN training epochs |
-| `--batch-size` | int | `64` | ENN training mini-batch size |
+| `--epochs` | int | `2` | ENN training epochs (from `config.yaml`) |
+| `--batch-size` | int | `1` | ENN training mini-batch size (from `config.yaml`) |
 | `--lr` | float | `0.0001` | ENN Adam optimizer learning rate |
-| `--n-z-samples` | int | `4` | Number of epistemic index $z$ samples per step |
-| `--alpha` | float | `1.0` | DoLa contrastive scaling factor $\alpha$ |
-| `--enn-weight` | float | `0.1` | Logit blending weight for ENN: $\text{logits}_{\text{dola}} + w \cdot \text{logits}_{\text{enn}}$ |
+| `--n-z-samples` | int | `3` | Number of epistemic index $z$ samples per step (from `config.yaml`) |
+| `--alpha` | float | `0.05` | DoLa contrastive scaling factor $\alpha$ (selected on the small C4 validation split; confirm with larger data) |
+| `--enn-weight` | float | `0.0` | Logit blending weight for ENN; positive values remain available for controlled evaluation |
 | `--force-extract` | flag | `False` | Overwrite existing feature cache |
 | `--no-baseline` | flag | `False` | Skip baseline model evaluation |
 | `--no-dola` | flag | `False` | Skip DoLa-only evaluation |
@@ -235,16 +235,16 @@ python main.py --n-c4 50 --n-questions 20 --epochs 2
 
 | File | Created by | Used by | Description |
 |------|-----------|---------|-------------|
-| `Neural Network/features_cache.npz` | `--mode extract` | `--mode train` | Contains post-RMSNorm mature ($h_M$) and premature ($h_P$) hidden states, target tokens, DoLa logits, layer IDs, and train/val split (v2 format). |
-| `Neural Network/enn_checkpoint.pkl` | `--mode train` | `--mode eval`, `--mode ablation`, `--mode before-after` | Serialized JAX Epinet trainable weights and hyperparameter config. |
+| `Neural Network/features_cache.npz` | `--mode extract` | `--mode train` | Contains post-RMSNorm mature ($h_M$) and premature ($h_P$) features, next-token labels, document IDs, and extraction settings (v4 format). Train/validation splitting is document-level. |
+| `checkpoints/enn_best.pt` | `--mode train` | `--mode eval`, `--mode ablation`, `--mode before-after` | Best PyTorch Epinet checkpoint selected by validation loss when validation features are available. |
 | `output/before_after/results.json` | `--mode before-after` | — | Full per-question before/after results, aggregate metrics, training losses, and CLI args for reproducibility. |
 | `output/before_after/*.png` | `--mode before-after` | — | 8 comparison graphs (accuracy, log-likelihood, confidence, entropy, uncertainty, heatmap, training loss, dashboard). |
 | `output/c4_eval/c4_eval_results.json` | `--mode c4-eval` | — | Perplexity and evaluation metrics on C4 validation texts. |
 | `output/c4_eval/*.png` | `--mode c4-eval` | — | C4 evaluation graphs for token-level log-likelihood, accuracy, and uncertainty. |
 
-> **Cache Reset**: If you modify the layer extraction logic or experience corrupt cache files, delete both artifacts to start fresh:
+> **Cache Reset**: If you modify layer extraction logic or experience corrupt cache files, delete the feature cache and PyTorch checkpoints to start fresh:
 > ```bash
-> rm -f "Neural Network/features_cache.npz" "Neural Network/enn_checkpoint.pkl"
+> rm -f "Neural Network/features_cache.npz" checkpoints/enn_best.pt checkpoints/enn_epoch_*.pt
 > ```
 
 ---

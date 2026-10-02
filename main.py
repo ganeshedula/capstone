@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+import textwrap
 import time
 
 import numpy as np
@@ -171,6 +172,9 @@ def cmd_train(args, model, tokenizer, device):
     with open(history_path, "w", encoding="utf-8") as fh:
         json.dump({"epochs": args.epochs, "batch_size": args.batch_size,
                    "learning_rate": args.lr, "num_epistemic_samples": args.n_z_samples,
+                   "alpha": args.alpha, "enn_weight": args.enn_weight,
+                   "enn_hidden_dim": args.enn_hidden_dim,
+                   "epistemic_index_dim": args.epistemic_index_dim,
                    "train_losses": train_losses, "val_losses": val_losses}, fh, indent=2)
     print(f"       Training history: {history_path}")
 
@@ -246,6 +250,76 @@ def cmd_eval(args, model, tokenizer, device):
         print()
 
 
+def cmd_evaluate_dataset(args, model, tokenizer, device):
+    """Evaluate answer correctness and hallucination detection only against labels."""
+    from inference import generate_answer
+    from metrics import binary_metrics
+    if not args.dataset:
+        raise ValueError("--mode evaluate requires --dataset PATH")
+    path = args.dataset if os.path.isabs(args.dataset) else os.path.join(_ROOT, args.dataset)
+    with open(path, encoding="utf-8") as stream: dataset = json.load(stream)
+    samples = dataset if isinstance(dataset, list) else dataset.get("data", dataset.get("examples", []))
+    if not samples: raise ValueError("Dataset must be a non-empty JSON array or contain a data/examples array")
+    if any(not row.get("question") or not (row.get("ground_truth") or row.get("answer")) for row in samples):
+        raise ValueError("Each dataset row needs question and ground_truth (or answer) fields")
+    if any("hallucination_label" not in row for row in samples):
+        raise ValueError("Each row must include a labeled hallucination_label (true/false or 1/0)")
+    has_enn = os.path.exists(ENN_CHECKPOINT)
+    enn = load_enn(ENN_CHECKPOINT, device=device) if has_enn else None
+    vh = get_vocab_head_weight(model) if has_enn else None
+    labels = {name: [] for name in ("Base TinyLlama", "DoLa", "DoLa + SC", "DoLa + ENN", "Final System")}
+    correct = {name: [] for name in labels}; confidence = {name: [] for name in labels}
+    hallu_probs = {name: [] for name in labels}
+    print(f"\nEvaluating {len(samples)} labeled examples from {path}")
+    for row in samples:
+        question = row["question"]
+        truth = str(row.get("ground_truth", row.get("answer", ""))).strip().casefold()
+        prompt = __import__('load_llama2').build_prompt(tokenizer, question)
+        ids = tokenizer(prompt, return_tensors="pt").to(device)["input_ids"]
+        generated = {
+            "Base TinyLlama": generate_answer(model, tokenizer, ids, "base", max_new_tokens=args.max_new_tokens),
+            "DoLa": generate_answer(model, tokenizer, ids, "dola", alpha=args.alpha, max_new_tokens=args.max_new_tokens),
+        }
+        sc_decision, sc_winner, clustering, reports, _ = run_interactive_self_consistency(
+            args, model, tokenizer, device, question, ids, args.temperature)
+        generated["DoLa + SC"] = sc_winner
+        if has_enn:
+            generated["DoLa + ENN"] = generate_answer(model, tokenizer, ids, "dola_enn", alpha=args.alpha,
+                epinet=enn, vocab_head_weight=vh, n_z_samples=args.n_z_samples,
+                enn_weight=args.enn_weight, max_new_tokens=args.max_new_tokens)
+        else:
+            generated["DoLa + ENN"] = generated["DoLa"]
+        generated["Final System"] = sc_winner
+        refs = row.get("reference_answers", [truth])
+        refs = [str(value).strip().casefold() for value in refs]
+        for name, item in generated.items():
+            answer = str(item.get("answer", "")).strip().casefold()
+            is_correct = int(answer in refs)
+            conf = float(item.get("mean_token_confidence", item.get("confidence", 0.0)))
+            if name in ("DoLa + SC", "Final System"):
+                metric = item.get("metrics", {})
+                risk = float(metric.get("hallucination_score", 1.0-conf))
+                conf = float(metric.get("reliability_probability", conf))
+            else:
+                risk = 1.0-conf
+            correct[name].append(is_correct); confidence[name].append(conf)
+            label = row["hallucination_label"]
+            labels[name].append(int(label if isinstance(label, bool) else str(label).strip().casefold() in ("1", "true", "yes", "hallucination")))
+            hallu_probs[name].append(risk)
+    print("\nMODEL EVALUATION — exact-match answer correctness against references")
+    print(f"{'Method':<20} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>10} {'Hallu det.':>11} {'FPR':>8} {'FNR':>8} {'ECE':>8} {'Brier':>8}")
+    print("-" * 108)
+    for name in labels:
+        answer_metrics = binary_metrics(correct[name], confidence[name])
+        detection = binary_metrics(labels[name], hallu_probs[name])
+        exact_accuracy = sum(correct[name]) / max(1, len(correct[name]))
+        print(f"{name:<20} {exact_accuracy:>9.1%} {answer_metrics['precision']:>9.1%} {answer_metrics['recall']:>9.1%} {answer_metrics['f1']:>9.1%} {detection['hallucination_detection_rate']:>10.1%} {detection['false_positive_rate']:>7.1%} {detection['false_negative_rate']:>7.1%} {answer_metrics['ece']:>7.3f} {answer_metrics['brier_score']:>8.3f}")
+    if not has_enn:
+        print("ENN status: HEURISTIC / UNCALIBRATED; DoLa + ENN answer row falls back to DoLa (no token ENN checkpoint).")
+    print("Accuracy uses exact reference matching. Hallucination detection uses provided labels; Base/DoLa risk is the proxy 1 − mean token confidence.")
+    print("Reliability estimates are not reported as accuracy. Calibration metrics use answer confidence against exact-match correctness.")
+
+
 def cmd_dola_sweep(args, model, tokenizer, device):
     """
     DoLa hyperparameter sweep:  test fixed premature layers and alpha values.
@@ -254,7 +328,7 @@ def cmd_dola_sweep(args, model, tokenizer, device):
     from dola import DoLaStats
 
     fixed_layers = [0, 2, 4, 6, 8, 10, 14, 18]
-    alphas       = [0.1, 0.25, 0.5, 1.0]
+    alphas       = [0.05, 0.1, 0.25, 0.5, 1.0]
 
     print("\n" + "=" * 60)
     print("  DoLa HYPERPARAMETER SWEEP")
@@ -623,6 +697,11 @@ def cmd_c4_eval(args, model, tokenizer, device):
     save_c4_results(per_text_results, aggregate, output_dir, args_dict)
 
     # Generate plots
+    aggregate["after_label"] = (
+        f"DoLa (ENN weight={args.enn_weight:g})"
+        if args.enn_weight == 0
+        else f"DoLa + ENN (weight={args.enn_weight:g})"
+    )
     saved_plots = generate_c4_plots(aggregate, output_dir)
 
     # Final summary
@@ -649,6 +728,243 @@ def cmd_c4_eval(args, model, tokenizer, device):
     print("=" * 70 + "\n")
 
 
+def run_interactive_self_consistency(args, model, tokenizer, device, question, ids, temperature):
+    """Generate, cluster, verify and score one candidate pool."""
+    from inference import generate_candidate_batch
+    from semantic_consistency import answer_embeddings, cluster_answers
+    from factuality import verify_answer
+    from claim_verifier import score_claims, split_claims
+    from answer_selector import score_candidates, decide
+    from reliability_enn import predict_reliability
+    evidence, retrieval_note = ([], None)
+    if args.use_rag:
+        from rag import retrieve_evidence
+        evidence, retrieval_note = retrieve_evidence(question)
+        if retrieval_note: print(f"[RAG] {retrieval_note}")
+    samples = generate_candidate_batch(model, tokenizer, ids, "dola", args.sc_samples,
+                                      alpha=args.alpha, max_new_tokens=args.max_new_tokens,
+                                      temperature=temperature, top_p=args.top_p)
+    for index, item in enumerate(samples):
+        for attempt in range(2):
+            if item.get("answer", "").strip(): break
+            item = generate_candidate_batch(model, tokenizer, ids, "dola", 1,
+                                            alpha=args.alpha, max_new_tokens=args.max_new_tokens,
+                                            temperature=temperature, top_p=args.top_p,
+                                            seed=42000 + index * 101 + attempt)[0]
+        samples[index] = item
+        if not item.get("answer", "").strip():
+            item["answer"] = "I could not produce a non-empty answer."
+    answers = [item["answer"] for item in samples]
+    clustering = cluster_answers(answers, answer_embeddings(model, tokenizer, answers, device),
+                                 args.semantic_similarity_threshold)
+    sim = np.asarray(clustering["similarity_matrix"], dtype=float)
+    claims_by_candidate = [split_claims(answer) for answer in answers]
+    flat_claims = [claim for group in claims_by_candidate for claim in group]
+    claim_vectors = answer_embeddings(model, tokenizer, flat_claims, device) if flat_claims else np.empty((0, model.config.hidden_size))
+    claim_vector_map = {claim: claim_vectors[k] for k, claim in enumerate(flat_claims)}
+    def claim_similarity(left, right):
+        a, b = claim_vector_map.get(left), claim_vector_map.get(right)
+        if a is None or b is None: return 0.0
+        return float(np.dot(a, b) / max(1e-12, np.linalg.norm(a)*np.linalg.norm(b)))
+    reports = []
+    for i, item in enumerate(samples):
+        peers = [answers[j] for j in range(len(answers)) if j != i]
+        factual = verify_answer(model, tokenizer, question, item["answer"], evidence=evidence,
+                                max_new_tokens=96)
+        peer_claims = [claim for j, group in enumerate(claims_by_candidate) if j != i for claim in group]
+        claim = score_claims(item["answer"], peers,
+                             lambda a, b: claim_similarity(a, b))
+        # Candidate-level semantic support is measurable without pretending a sentence parser is an NLI model.
+        semantic_support = float(np.mean([sim[i, j] for j in range(len(answers)) if j != i])) if len(answers) > 1 else 1.0
+        claim["claim_support"] = semantic_support
+        entropy_scale = max(1.0, float(np.log(max(2, len(tokenizer)))))
+        mean_conf = item.get("mean_token_confidence", item.get("confidence", 0.0))
+        mean_entropy = item.get("mean_token_entropy", 0.0)
+        metrics = {
+            "semantic_consistency": len(clustering["clusters"][clustering["cluster_ids"][i]]) / len(answers),
+            "factuality_score": factual["factuality_score"],
+            "hallucination_score": factual["hallucination_score"],
+            "relevance_score": factual["relevance_score"],
+            "evidence_support_score": factual["evidence_support_score"],
+            "contradiction_score": max(factual["contradiction_score"], claim["claim_contradiction"]),
+            "claim_support": claim["claim_support"],
+            "token_confidence": mean_conf,
+            "sequence_probability": item.get("normalized_sequence_probability", 0.0),
+            "entropy_penalty": min(1.0, mean_entropy / entropy_scale),
+            "verifier_parse_ok": factual["verifier_parse_ok"],
+        }
+        enn_path = os.path.join(_ROOT, "checkpoints", "reliability_enn.pt")
+        enn_features = {
+            "mean_token_confidence": mean_conf,
+            "min_token_confidence": item.get("min_token_confidence", mean_conf),
+            "mean_token_entropy": mean_entropy,
+            "max_token_entropy": item.get("max_token_entropy", mean_entropy),
+            "uncertain_token_ratio": item.get("uncertain_token_ratio", 0.0),
+            "mean_topk_probability_mass": float(np.mean(item.get("topk_probability_mass", [0.0]))),
+            "sequence_log_probability": item.get("sequence_log_probability", 0.0),
+            "normalized_sequence_probability": item.get("normalized_sequence_probability", 0.0),
+            "dola_confidence": mean_conf, "dola_layer_disagreement": len(set(x for x in item.get("dola_layers", []) if x is not None))/max(1, len(item.get("dola_layers", []))),
+            "semantic_consistency": metrics["semantic_consistency"], "largest_cluster_ratio": clustering["largest_cluster_ratio"],
+            "average_pairwise_similarity": clustering["average_pairwise_similarity"],
+            "factuality_score": metrics["factuality_score"], "contradiction_score": metrics["contradiction_score"],
+            "candidate_disagreement": 1.0 - clustering["largest_cluster_ratio"],
+            "answer_length": len(tokenizer(item["answer"]).input_ids), "epistemic_uncertainty": 0.0,
+            "claim_support": metrics["claim_support"], "relevance_score": metrics["relevance_score"],
+            "evidence_support_score": metrics["evidence_support_score"]}
+        if os.path.exists(enn_path):
+            reliability = predict_reliability(enn_path, enn_features, device=device)
+        else:
+            # Explicitly untrained fallback; never calls next-token ENN variance correctness evidence.
+            estimate = .50 * metrics["factuality_score"] + .25 * metrics["semantic_consistency"] + .25 * metrics["claim_support"]
+            reliability = {"reliability_probability": estimate, "hallucination_probability": 1-estimate,
+                           "epistemic_uncertainty": None, "source": "untrained heuristic (not calibrated)"}
+        metrics["reliability_probability"] = reliability["reliability_probability"]
+        judge_hallucination = (metrics["hallucination_score"]
+                               if factual.get("verifier_status") != "FALLBACK" else 0.0)
+        metrics["hallucination_score"] = max(judge_hallucination, reliability["hallucination_probability"])
+        item.update({"cluster_id": clustering["cluster_ids"][i]+1, "metrics": metrics,
+                     "factuality": factual, "claim_diagnostics": claim, "reliability": reliability})
+        reports.append(item)
+    score_weights = json.loads(args.score_weights) if args.score_weights else None
+    penalty_weights = json.loads(args.penalty_weights) if args.penalty_weights else None
+    score_candidates(reports, score_weights, penalty_weights)
+    decision = decide(reports, args.reliability_threshold, args.consistency_threshold,
+                      args.hallucination_threshold)
+    ranked = sorted(reports, key=lambda item: item["final_score"], reverse=True)
+    for rank, item in enumerate(ranked, 1): item["rank"] = rank
+    if args.verbose:
+        print("\n## SELF-CONSISTENCY CANDIDATES (VERBOSE)")
+        for index, item in enumerate(reports, 1):
+            print(f"Candidate {index}: {item['answer']}\n  token confidence={item.get('mean_token_confidence', 0):.3f}; entropy={item.get('mean_token_entropy', 0):.3f}; seq-prob={item.get('normalized_sequence_probability', 0):.3g}; DoLa layers={item.get('dola_layers', [])}; score={item['final_score']:.3f}; verifier={item['factuality'].get('verifier_status')}")
+            print(f"  verifier details: {item['factuality'].get('verifier_raw', '')}")
+            for claim_row in item["claim_diagnostics"]["claims"]:
+                print(f"  Claim: {claim_row['claim']} | support={claim_row['claim_support']:.3f} contradiction={claim_row['claim_contradiction']:.3f}")
+    print(f"\nSELF-CONSISTENCY  Candidates: {len(reports)} | clusters: {clustering['cluster_count']} | largest: {max(map(len, clustering['clusters']), default=0)}/{len(reports)} | support: {clustering['largest_cluster_ratio']:.1%} | avg similarity: {clustering['average_pairwise_similarity']:.1%}")
+    print("Candidate ranking: " + " | ".join(f"{item['rank']}. Candidate {reports.index(item)+1} — {item['final_score']:.3f}" for item in ranked))
+    winner_rank = next((i + 1 for i, item in enumerate(reports) if item is decision.get("selected")), "N/A")
+    print(f"Selected candidate: Candidate {winner_rank}")
+    if clustering["average_pairwise_similarity"] >= args.semantic_similarity_threshold:
+        print("High consensus — candidates are semantically similar.")
+    if any(not item["factuality"].get("verifier_parse_ok") for item in reports):
+        print("Verifier status: FALLBACK (neutral score used; not treated as hallucination evidence)")
+    winner = decision["selected"]
+    return decision, winner, clustering, reports, evidence
+
+
+def append_interactive_result(question, base, dola, sc_answer, enn_answer, winner, decision, clustering):
+    import csv
+    path = os.path.join(_ROOT, "results.csv")
+    fields = ["question", "base_answer", "dola_answer", "sc_answer", "enn_answer",
+              "final_answer", "base_confidence", "dola_confidence", "sc_consistency",
+              "enn_reliability", "hallucination_probability", "factuality_score",
+              "final_score", "decision"]
+    row = {"question": question, "base_answer": base["answer"],
+           "dola_answer": dola["answer"], "sc_answer": sc_answer,
+           "enn_answer": enn_answer, "final_answer": winner.get("answer", ""),
+           "base_confidence": base.get("mean_token_confidence", ""),
+           "dola_confidence": dola.get("mean_token_confidence", ""),
+           "sc_consistency": clustering.get("largest_cluster_ratio", ""),
+           "factuality_score": winner.get("metrics", {}).get("factuality_score", ""),
+           "enn_reliability": winner.get("metrics", {}).get("reliability_probability", ""),
+           "hallucination_probability": winner.get("metrics", {}).get("hallucination_score", ""),
+           "final_score": winner.get("final_score", ""), "decision": decision}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    existing, old_fields = [], []
+    if os.path.exists(path) and os.path.getsize(path):
+        with open(path, newline="", encoding="utf-8") as stream:
+            reader = csv.DictReader(stream); old_fields = reader.fieldnames or []; existing = list(reader)
+    all_fields = list(dict.fromkeys(old_fields + fields))
+    if old_fields != all_fields:
+        with open(path, "w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=all_fields); writer.writeheader(); writer.writerows(existing)
+    with open(path, "a", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=all_fields); writer.writerow(row)
+
+
+def _short(text, limit=250):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 3].rstrip() + "..."
+
+
+def _pct(value):
+    try: return f"{float(value):.1%}"
+    except (TypeError, ValueError): return "N/A"
+
+
+def print_interactive_report(question, base, dola, sc_answer, enn, winner, decision, clustering, reports, enn_status):
+    print("\nHALLUCINATION ANALYSIS")
+    print(f"Question: {question}\n")
+    rows = [("BASE", base["answer"]), ("DOLA", dola["answer"]),
+            ("DOLA + SC", sc_answer), ("DOLA + ENN", enn.get("answer", "Not available")),
+            ("FINAL", winner.get("answer", ""))]
+    print(f"{'Method':<16} Answer")
+    print("-" * 96)
+    for label, answer in rows: print(f"{label:<16} {_short(answer)}")
+    m = winner.get("metrics", {})
+    print("\nMETRICS COMPARISON")
+    print(f"{'Method':<16} {'Conf.':>8} {'Entropy':>9} {'Consistency':>13} {'Reliability':>12} {'Halluc.':>9}")
+    print("-" * 74)
+    for label, item, consistency, rel in [
+        ("Base", base, None, None), ("DoLa", dola, None, None),
+        ("DoLa + SC", winner, clustering["largest_cluster_ratio"], None),
+        ("DoLa + ENN", enn or {}, None, m.get("reliability_probability")),
+        ("Final", winner, clustering["largest_cluster_ratio"], m.get("reliability_probability"))]:
+        mm = item.get("metrics", {})
+        conf = item.get("mean_token_confidence", item.get("confidence"))
+        entropy = item.get("mean_token_entropy")
+        reliability = rel if rel is not None else mm.get("reliability_probability")
+        halluc = (1 - reliability) if reliability is not None else mm.get("hallucination_score")
+        print(f"{label:<16} {_pct(conf):>8} {(_pct(entropy) if entropy is not None else 'N/A'):>9} {(_pct(consistency) if consistency is not None else '—'):>13} {(_pct(reliability) if reliability is not None else 'N/A'):>12} {(_pct(halluc) if halluc is not None else 'N/A'):>9}")
+    print("\nMETHOD COMPARISON")
+    for label, line in [("Base TinyLlama", base), ("DoLa", dola)]:
+        print(f"{label}\nConfidence: {_pct(line.get('mean_token_confidence'))}\nAnswer: {_short(line['answer'])}\n")
+    print(f"DoLa + Self-Consistency\nConsistency: {_pct(clustering['largest_cluster_ratio'])}\nSelected candidate: Candidate {winner.get('rank', 'N/A')}\nAnswer: {_short(sc_answer)}\n")
+    token_enn_trained = os.path.exists(ENN_CHECKPOINT)
+    print(f"DoLa + ENN\nToken ENN status: {'TRAINED' if token_enn_trained else 'NOT AVAILABLE'}\nReliability estimator: {'TRAINED' if enn_status else 'HEURISTIC / UNCALIBRATED'}\nReliability: {_pct(m.get('reliability_probability'))}\nHallucination risk: {_pct(m.get('hallucination_score'))}\nAnswer: {_short(enn.get('answer', 'Not available'))}\n")
+    print(f"Final System\nReliability: {_pct(m.get('reliability_probability'))} | Consistency: {_pct(m.get('semantic_consistency'))} | Factuality: {_pct(m.get('factuality_score'))}\nDecision: {decision}\nAnswer: {_short(winner.get('answer'))}")
+    print("\nIMPROVEMENT ANALYSIS (metric changes; not accuracy claims)")
+    print(f"Base → DoLa confidence: {(dola.get('mean_token_confidence', 0)-base.get('mean_token_confidence', 0))*100:+.2f} percentage points")
+    print(f"DoLa → Self-Consistency support: {_pct(clustering['largest_cluster_ratio'])}")
+    print(f"ENN reliability estimate: {_pct(m.get('reliability_probability'))}")
+    print(f"ENN / Reliability: {_pct(m.get('reliability_probability'))} | epistemic uncertainty: N/A | status: {'TRAINED' if os.path.exists(os.path.join(_ROOT, 'checkpoints', 'reliability_enn.pt')) else 'HEURISTIC / UNCALIBRATED'}")
+    print(f"Verifier status: {winner.get('factuality', {}).get('verifier_status', 'FALLBACK')}\n")
+    print("╔══════════════════════════════════════════════════════════════════════╗")
+    print("║ FINAL RESULT                                                         ║")
+    print("╠══════════════════════════════════════════════════════════════════════╣")
+    print(f"║ Question: {_short(question, 60):<60} ║")
+    print(f"║ Selected method: {'DoLa + SC + ENN':<52} ║")
+    print(f"║ Decision: {decision:<62} ║")
+    print(f"║ Confidence: {_pct(winner.get('mean_token_confidence')):<60} ║")
+    print(f"║ Semantic consensus: {_pct(clustering['largest_cluster_ratio']):<51} ║")
+    print(f"║ Factuality: {_pct(m.get('factuality_score')):<61} ║")
+    print(f"║ Reliability: {_pct(m.get('reliability_probability')):<60} ║")
+    print(f"║ Hallucination risk: {_pct(m.get('hallucination_score')):<52} ║")
+    print("║ Answer:                                                                ║")
+    for answer_line in textwrap.wrap(_short(winner.get("answer"), 250), width=68) or [""]:
+        print(f"║ {answer_line:<68} ║")
+    print("╚══════════════════════════════════════════════════════════════════════╝")
+    append_interactive_result(question, base, dola, sc_answer, enn.get("answer", ""), winner, decision, clustering)
+    save_method_comparison(question, base, dola, winner, enn, clustering, decision)
+
+
+def save_method_comparison(question, base, dola, winner, enn, clustering, decision):
+    import csv
+    path = os.path.join(_ROOT, "comparison_results.csv")
+    fields = ["question", "method", "answer", "confidence", "consistency", "reliability", "hallucination_risk", "decision"]
+    final_metrics = winner.get("metrics", {})
+    rows = [("Base", base, None), ("DoLa", dola, None), ("DoLa + SC", winner, clustering.get("largest_cluster_ratio")),
+            ("DoLa + ENN", enn, None), ("Final", winner, clustering.get("largest_cluster_ratio"))]
+    with open(path, "a", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        if stream.tell() == 0: writer.writeheader()
+        for label, item, consistency in rows:
+            reliability = final_metrics.get("reliability_probability") if label in ("DoLa + ENN", "Final") else ""
+            writer.writerow({"question": question, "method": label, "answer": item.get("answer", ""),
+                             "confidence": item.get("mean_token_confidence", ""), "consistency": consistency or "",
+                             "reliability": reliability, "hallucination_risk": final_metrics.get("hallucination_score", "") if reliability != "" else "",
+                             "decision": decision if label == "Final" else ""})
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -666,7 +982,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument(
         "--mode",
-        choices=["all", "extract", "train", "eval", "ask", "dola-sweep", "ablation", "before-after", "c4-eval"],
+        choices=["all", "extract", "train", "eval", "ask", "evaluate", "dola-sweep", "ablation", "before-after", "c4-eval"],
         default="all",
         help="Pipeline stage to run.",
     )
@@ -684,12 +1000,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--enn-hidden-dim", type=int, default=training.get("enn_hidden_dim", 512), help="ENN MLP hidden width")
     p.add_argument("--epistemic-index-dim", type=int, default=training.get("epistemic_index_dim", 6), help="Epistemic index width")
     p.add_argument("--debug", action="store_true", help="Print model and tensor diagnostics")
+    p.add_argument("--verbose", action="store_true", help="Show all candidate answers and detailed diagnostics")
+    p.add_argument("--quiet", action="store_true", help="Keep output to the compact research summary (default)")
 
     # DoLa
     p.add_argument("--alpha",        type=float, default=dola_config.get("alpha", 1.0), help="DoLa contrastive alpha")
 
     # ENN inference
-    p.add_argument("--enn-weight",   type=float, default=1.0,  help="Weight of ENN logits added to DoLa (1.0 is the paper architecture)")
+    p.add_argument("--enn-weight",   type=float, default=evaluation.get("enn_weight", 0.0),  help="Weight of ENN logits added to DoLa")
+    p.add_argument("--sc-samples", type=int, default=5, help="DoLa candidates per interactive self-consistency vote")
+    p.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature for interactive self-consistency")
+    p.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling cutoff for interactive self-consistency")
+    p.add_argument("--max-new-tokens", type=int, default=48, help="Maximum answer length")
+    p.add_argument("--reliability-threshold", type=float, default=0.55)
+    p.add_argument("--consistency-threshold", type=float, default=0.4)
+    p.add_argument("--hallucination-threshold", type=float, default=0.55)
+    p.add_argument("--semantic-similarity-threshold", type=float, default=0.78)
+    p.add_argument("--score-weights", default=None, help="JSON object mapping score names to non-negative weights")
+    p.add_argument("--penalty-weights", default=None, help="JSON object: contradiction, hallucination, entropy, unsupported_claim")
+    p.add_argument("--use-rag", action="store_true", help="Retrieve Wikipedia evidence for optional factuality checking")
 
     # Flags
     p.add_argument("--force-extract", action="store_true", help="Re-extract features")
@@ -700,6 +1029,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Before-after evaluation
     p.add_argument("--eval-questions", type=str, default="eval_questions.json",
                    help="Path to JSON file with evaluation questions")
+    p.add_argument("--dataset", type=str, default=None, help="Labeled JSON evaluation dataset")
     p.add_argument("--output-dir",     type=str, default="output/before_after",
                    help="Directory for before-after results and graphs")
 
@@ -721,8 +1051,9 @@ def main() -> None:
 
     # ---- Load model ----
     device, dtype = get_device()
-    print(f"[main] Device: {device} | dtype: {dtype}")
-    print(f"[main] Loading TinyLlama from {MODEL_DIR}...")
+    if not args.quiet:
+        print(f"[main] Device: {device} | dtype: {dtype}")
+        print(f"[main] Loading TinyLlama from {MODEL_DIR}...")
 
     tokenizer = _load_tokenizer(MODEL_DIR)
     model     = _load_model(MODEL_DIR, device, dtype)
@@ -734,7 +1065,8 @@ def main() -> None:
         print(f"[debug] frozen_parameters={sum(not p.requires_grad for p in model.parameters())}/{sum(1 for _ in model.parameters())}")
 
     n_params = sum(p.numel() for p in model.parameters()) / 1e9
-    print(f"[main] Model loaded — {n_params:.2f}B parameters")
+    if not args.quiet:
+        print(f"[main] Model loaded — {n_params:.2f}B parameters")
 
     # ---- Dispatch ----
     if args.mode == "extract":
@@ -746,36 +1078,38 @@ def main() -> None:
     elif args.mode == "eval":
         cmd_eval(args, model, tokenizer, device)
 
+    elif args.mode == "evaluate":
+        cmd_evaluate_dataset(args, model, tokenizer, device)
+
     elif args.mode == "ask":
         from inference import generate_answer
-        print("Enter an empty question to exit.")
+        if args.sc_samples < 1 or args.max_new_tokens < 1:
+            raise ValueError("--sc-samples and --max-new-tokens must be positive")
+        print(f"Interactive TinyLlama comparison | device={device} | reliability estimator={'TRAINED' if os.path.exists(os.path.join(_ROOT, 'checkpoints', 'reliability_enn.pt')) else 'HEURISTIC'}")
+        print("Enter a question (blank line exits).")
         while True:
-            question = input("\nEnter your question: ").strip()
+            question = input("\nQuestion: ").strip()
             if not question:
                 break
-            prompt = _load_tokenizer and __import__('load_llama2').build_prompt(tokenizer, question)
+            prompt = __import__('load_llama2').build_prompt(tokenizer, question)
             ids = tokenizer(prompt, return_tensors="pt").to(device)["input_ids"]
-            def show(name, result):
-                print(f"\n{name}\nAnswer: {result['answer']}\nConfidence: {result['confidence']*100:.2f}%\nEntropy: {result['entropy']:.4f}")
-                if result.get("selected_premature_layer") is not None:
-                    print(f"Selected premature layer: {result['selected_premature_layer']}")
-                if result.get("uncertainty"):
-                    print(f"Epistemic variance: {result['uncertainty']['epistemic_variance']:.6f}")
-                print("Top 10 tokens:")
-                for token, probability in result["top_tokens"]:
-                    print(f"  {token!r:<20} {probability:.4f}")
-            base = generate_answer(model, tokenizer, ids, "base", alpha=args.alpha)
-            dola = generate_answer(model, tokenizer, ids, "dola", alpha=args.alpha)
-            show("BASE TINYLLAMA", base)
-            show("DOLA", dola)
+            base = generate_answer(model, tokenizer, ids, "base", alpha=args.alpha,
+                                   max_new_tokens=args.max_new_tokens)
+            dola = generate_answer(model, tokenizer, ids, "dola", alpha=args.alpha,
+                                   max_new_tokens=args.max_new_tokens)
+            decision, winner, clustering, reports, evidence = run_interactive_self_consistency(
+                args, model, tokenizer, device, question, ids, args.temperature)
+            enn = {}
             if os.path.exists(ENN_CHECKPOINT):
                 net = load_enn(ENN_CHECKPOINT, device=device)
-                vh = get_vocab_head_weight(model)
-                enn = generate_answer(model, tokenizer, ids, "dola_enn", alpha=args.alpha, epinet=net, vocab_head_weight=vh, n_z_samples=args.n_z_samples)
-                show("DOLA + ENN", enn)
-                print(f"\nCOMPARISON\nBase: {base['confidence']*100:.2f}%\nDoLa: {dola['confidence']*100:.2f}%\nDoLa + ENN: {enn['confidence']*100:.2f}%")
-            else:
-                print("\nDOLA + ENN\nNo new ENN checkpoint yet. Run --mode train first.")
+                enn = generate_answer(model, tokenizer, ids, "dola_enn", alpha=args.alpha,
+                                      epinet=net, vocab_head_weight=get_vocab_head_weight(model),
+                                      n_z_samples=args.n_z_samples, enn_weight=args.enn_weight,
+                                      max_new_tokens=args.max_new_tokens)
+            winner = decision.get("selected") or max(reports, key=lambda item: item.get("final_score", 0))
+            print_interactive_report(question, base, dola, winner.get("answer", ""), enn, winner,
+                                     decision["decision"], clustering, reports,
+                                     os.path.exists(os.path.join(_ROOT, "checkpoints", "reliability_enn.pt")))
 
     elif args.mode == "dola-sweep":
         cmd_dola_sweep(args, model, tokenizer, device)

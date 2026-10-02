@@ -30,7 +30,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from evaluate import _log_likelihood, _dola_logit_fn, _dola_enn_logit_fn
+from evaluate import _log_likelihood, _dola_logit_fn, _dola_enn_logit_fn, _encode_question_answer
 from dola import DoLaStats
 
 
@@ -150,41 +150,31 @@ def compute_answer_entropy(
     device: str,
     question: str,
     answer: str,
+    logit_fn: Optional[Callable] = None,
+    already_log_scores: bool = False,
 ) -> float:
     """
     Compute the mean per-token entropy of the model's output distribution
-    over the answer tokens (using baseline forward pass).
+    over the answer tokens using the scoring function for the current phase.
     """
-    prompt = f"Q: {question}\nA: {answer}"
-    q_prefix = f"Q: {question}\nA: "
-
-    enc = tokenizer(
-        prompt, return_tensors="pt",
-        truncation=True, max_length=512,
-    ).to(device)
-
-    q_enc = tokenizer(
-        q_prefix, return_tensors="pt",
-        truncation=True, max_length=512,
+    input_ids, answer_start, answer_end = _encode_question_answer(
+        tokenizer, question, answer, device,
     )
 
-    input_ids = enc["input_ids"]
-    q_len = q_enc["input_ids"].shape[1]
-
     with torch.inference_mode():
-        out = model(input_ids=input_ids, use_cache=False)
-        probs = F.softmax(out.logits.float(), dim=-1)
+        scores = (logit_fn(input_ids) if logit_fn is not None
+                  else model(input_ids=input_ids, use_cache=False).logits)
+        log_probs = scores.float() if already_log_scores else F.log_softmax(scores.float(), dim=-1)
+        probs = log_probs.exp()
 
     probs = probs[0]  # (T, V)
 
-    ans_start = q_len - 1
-    ans_end = input_ids.shape[1] - 1
-
-    if ans_end <= ans_start:
+    if answer_end <= answer_start:
         return 0.0
 
     entropies = []
-    for pos in range(ans_start, ans_end):
+    for token_index in range(answer_start, answer_end):
+        pos = token_index - 1
         p = probs[pos]
         entropy = -torch.sum(p * torch.log(p.clamp_min(1e-10))).item()
         entropies.append(entropy)
@@ -198,6 +188,7 @@ def generate_free_form_answer(
     device: str,
     question: str,
     max_new_tokens: int = 64,
+    logit_fn: Optional[Callable] = None,
 ) -> str:
     """
     Generate a free-form answer for display purposes.
@@ -212,18 +203,28 @@ def generate_free_form_answer(
         truncation=True, max_length=384,
     ).to(device)
 
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,              # greedy for reproducibility
-            temperature=1.0,
-            repetition_penalty=1.1,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
-
-    generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    if logit_fn is None:
+        with torch.inference_mode():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                repetition_penalty=1.1,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    else:
+        # Route every decoding step through the same method being evaluated.
+        generated = inputs["input_ids"]
+        with torch.inference_mode():
+            for _ in range(max_new_tokens):
+                scores = logit_fn(generated).float()
+                token = scores[:, -1, :].argmax(dim=-1, keepdim=True)
+                generated = torch.cat([generated, token], dim=1)
+                if tokenizer.eos_token_id is not None and token.item() == tokenizer.eos_token_id:
+                    break
+        generated_tokens = generated[0, inputs["input_ids"].shape[1]:]
     return tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
 
 
@@ -291,11 +292,12 @@ def evaluate_single_question(
     # --- Entropy ---
     entropy = compute_answer_entropy(
         model, tokenizer, device, question, answer,
+        logit_fn=logit_fn, already_log_scores=already_log_scores,
     )
     result["entropy"] = entropy
 
     # --- Free-form generated answer ---
-    gen = generate_free_form_answer(model, tokenizer, device, question)
+    gen = generate_free_form_answer(model, tokenizer, device, question, logit_fn=logit_fn)
     result["generated_answer"] = gen
 
     # --- ENN uncertainty (only available after training) ---

@@ -64,7 +64,8 @@ def plot_perplexity_comparison(
 
     fig, ax = plt.subplots(figsize=FIGSIZE_SINGLE)
 
-    labels = ["Before\n(DoLa only)", "After\n(DoLa + ENN)"]
+    after_label = aggregate.get("after_label", "DoLa + ENN")
+    labels = ["Before\n(DoLa only)", f"After\n({after_label})"]
     values = [bp, ap if ap is not None else 0]
     colors = [COLOR_BEFORE, COLOR_AFTER]
 
@@ -124,7 +125,8 @@ def plot_accuracy_comparison(
 
     if at1 is not None:
         after_vals = [at1 * 100, at5 * 100]
-        bars2 = ax.bar(x + width/2, after_vals, width, label="After (DoLa+ENN)",
+        after_label = aggregate.get("after_label", "DoLa + ENN")
+        bars2 = ax.bar(x + width/2, after_vals, width, label=f"After ({after_label})",
                        color=COLOR_AFTER, edgecolor="white", linewidth=1.5)
 
         for bar, val in zip(bars2, after_vals):
@@ -138,10 +140,41 @@ def plot_accuracy_comparison(
     ax.set_xticks(x)
     ax.set_xticklabels(["Top-1 Accuracy", "Top-5 Accuracy"], fontsize=12)
     ax.legend(fontsize=11)
-    _style_ax(ax, "Token Prediction Accuracy on Held-Out C4",
-              ylabel="Accuracy (%)")
+    n_texts = aggregate.get("n_texts")
+    n_tokens = aggregate.get("n_tokens")
+    if n_texts is not None and n_tokens is not None:
+        title = f"Token Prediction Accuracy on Held-Out C4\n{n_texts} samples · {n_tokens:,} scored tokens"
+    else:
+        title = "Token Prediction Accuracy on Held-Out C4"
+    _style_ax(ax, title, ylabel="Accuracy (%)")
     plt.tight_layout()
     path = os.path.join(output_dir, "c4_accuracy_comparison.png")
+    fig.savefig(path, dpi=DPI, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[plots] Saved → {path}")
+    return path
+
+
+def plot_dola_layer_selection(aggregate: Dict[str, Any], output_dir: str) -> Optional[str]:
+    """Plot how often DoLa selected each premature layer across evaluated tokens."""
+    counts = aggregate.get("dola_layer_counts") or {}
+    if not counts:
+        return None
+    layers = sorted(counts, key=lambda layer: int(layer))
+    values = [counts[layer] for layer in layers]
+    total = sum(values)
+    percentages = [value / total * 100 for value in values]
+    fig, ax = plt.subplots(figsize=FIGSIZE_SINGLE)
+    bars = ax.bar([f"Layer {layer}" for layer in layers], percentages,
+                  color=COLOR_EPIST, edgecolor="white", linewidth=1.5)
+    for bar, pct, count in zip(bars, percentages, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.4,
+                f"{pct:.1f}%\n(n={count})", ha="center", va="bottom", fontsize=9)
+    _style_ax(ax, "DoLa Premature Layer Selection on Held-Out C4",
+              ylabel="Selected token positions (%)", xlabel=f"Evaluated positions (n={total})")
+    ax.set_ylim(0, max(percentages) * 1.2 + 1)
+    plt.tight_layout()
+    path = os.path.join(output_dir, "c4_dola_layer_selection.png")
     fig.savefig(path, dpi=DPI, bbox_inches="tight")
     plt.close(fig)
     print(f"[plots] Saved → {path}")
@@ -165,7 +198,8 @@ def plot_log_likelihood_comparison(
 
     fig, ax = plt.subplots(figsize=FIGSIZE_SINGLE)
 
-    labels = ["Before\n(DoLa only)", "After\n(DoLa + ENN)"]
+    after_label = aggregate.get("after_label", "DoLa + ENN")
+    labels = ["Before\n(DoLa only)", f"After\n({after_label})"]
     values = [bll, all_ if all_ is not None else 0]
     colors = [COLOR_BEFORE, COLOR_AFTER]
 
@@ -174,10 +208,13 @@ def plot_log_likelihood_comparison(
                   width=0.5, edgecolor="white", linewidth=1.5)
 
     for bar, val in zip(bars, values[:n_bars]):
-        y_offset = 0.02 if val < 0 else -0.02
-        va = "top" if val < 0 else "bottom"
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + y_offset,
-                f"{val:.4f}", ha="center", va=va, fontweight="bold", fontsize=11)
+        if val < 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() / 2,
+                    f"{val:.4f}", ha="center", va="center", color="white",
+                    fontweight="bold", fontsize=11)
+        else:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
+                    f"{val:.4f}", ha="center", va="bottom", fontweight="bold", fontsize=11)
 
     if all_ is not None:
         change = all_ - bll
@@ -367,9 +404,10 @@ def plot_per_text_perplexity_scatter(
     ax.set_ylim(lims)
     ax.set_aspect("equal")
     ax.legend(fontsize=10)
+    after_label = aggregate.get("after_label", "DoLa + ENN")
     _style_ax(ax, "Per-Text Perplexity: Before vs After",
               xlabel="Perplexity (Before — DoLa only)",
-              ylabel="Perplexity (After — DoLa + ENN)")
+              ylabel=f"Perplexity (After — {after_label})")
     plt.tight_layout()
     path = os.path.join(output_dir, "c4_perplexity_scatter.png")
     fig.savefig(path, dpi=DPI, bbox_inches="tight")
@@ -399,7 +437,7 @@ def plot_summary_dashboard(
     vals = [aggregate["before_perplexity"]]
     colors = [COLOR_BEFORE]
     if has_after:
-        labels.append("After\n(DoLa+ENN)")
+        labels.append(f"After\n({aggregate.get('after_label', 'DoLa + ENN')})")
         vals.append(aggregate["after_perplexity"])
         colors.append(COLOR_AFTER)
     bars = ax.bar(labels, vals, color=colors, width=0.5,
@@ -434,16 +472,19 @@ def plot_summary_dashboard(
     vals_ll = [aggregate["before_mean_ll"]]
     colors_ll = [COLOR_BEFORE]
     if has_after:
-        labels_ll.append("After\n(DoLa+ENN)")
+        labels_ll.append(f"After\n({aggregate.get('after_label', 'DoLa + ENN')})")
         vals_ll.append(aggregate["after_mean_ll"])
         colors_ll.append(COLOR_AFTER)
     bars = ax.bar(labels_ll, vals_ll, color=colors_ll, width=0.5,
                   edgecolor="white", linewidth=1.5)
     for bar, val in zip(bars, vals_ll):
-        y_off = 0.01 if val < 0 else -0.01
-        va = "top" if val < 0 else "bottom"
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + y_off,
-                f"{val:.4f}", ha="center", va=va, fontweight="bold", fontsize=10)
+        if val < 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() / 2,
+                    f"{val:.4f}", ha="center", va="center", color="white",
+                    fontweight="bold", fontsize=10)
+        else:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                    f"{val:.4f}", ha="center", va="bottom", fontweight="bold", fontsize=10)
     _style_ax(ax, "Mean Token Log-Likelihood (↑ higher is better)",
               ylabel="Log-Likelihood")
 
@@ -507,6 +548,7 @@ def generate_c4_plots(
     generators = [
         plot_perplexity_comparison,
         plot_accuracy_comparison,
+        plot_dola_layer_selection,
         plot_log_likelihood_comparison,
         plot_uncertainty_calibration,
         plot_uncertainty_breakdown,

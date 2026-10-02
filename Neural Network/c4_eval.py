@@ -235,6 +235,7 @@ def evaluate_text_tokens(
         "before_lls": before_lls,
         "before_top1_hits": before_top1_hits,
         "before_top5_hits": before_top5_hits,
+        "dola_layer_counts": {str(layer): int(count) for layer, count in stats.layer_counts.items()},
     }
 
     if has_enn:
@@ -361,7 +362,12 @@ def compute_c4_aggregate(
 
         # Per-text perplexities (for scatter plot)
         "before_per_text_ppl": [r["before_perplexity"] for r in results],
+        "dola_layer_counts": {},
     }
+
+    for result in results:
+        for layer, count in result.get("dola_layer_counts", {}).items():
+            agg["dola_layer_counts"][layer] = agg["dola_layer_counts"].get(layer, 0) + count
 
     if all_after_lls:
         agg.update({

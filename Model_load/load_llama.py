@@ -40,7 +40,7 @@ def load_model(model_name: str, device: str, dtype: torch.dtype, load_in_8bit: b
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=dtype,
+        dtype=dtype,
         low_cpu_mem_usage=True,
     )
     return model.to(device)
@@ -103,4 +103,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

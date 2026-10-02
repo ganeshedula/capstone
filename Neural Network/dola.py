@@ -187,21 +187,29 @@ def select_premature_layers_per_position(
     # Applying it again changes the base distribution, so project it directly.
     mature_logits = model.lm_head(mature_hidden)  # (B, T, V)
 
-    jsd_scores = []          # per-candidate  (B, T)
-    candidate_logits = []    # per-candidate  (B, T, V)
+    best_jsd = None
+    candidate_indices = None
+    selected_logits = None
 
-    for layer_idx in candidate_layers:
+    for candidate_idx, layer_idx in enumerate(candidate_layers):
         prem_logits = _layer_logits(model, hidden_states[layer_idx])
-        candidate_logits.append(prem_logits)
         jsd = js_divergence(mature_logits, prem_logits)  # (B, T)
-        jsd_scores.append(jsd)
+        if best_jsd is None:
+            best_jsd = jsd
+            candidate_indices = torch.zeros_like(jsd, dtype=torch.long)
+            selected_logits = prem_logits
+        else:
+            # Strict comparison preserves torch.argmax's first-index tie rule.
+            better = jsd > best_jsd
+            candidate_indices = torch.where(
+                better, torch.full_like(candidate_indices, candidate_idx), candidate_indices,
+            )
+            selected_logits = torch.where(better.unsqueeze(-1), prem_logits, selected_logits)
+            best_jsd = torch.where(better, jsd, best_jsd)
 
-    # (num_candidates, B, T)
-    jsd_stack = torch.stack(jsd_scores, dim=0)
-
-    # Best candidate per position
-    candidate_indices = torch.argmax(jsd_stack, dim=0)       # (B, T)
-    max_jsd_values = torch.max(jsd_stack, dim=0).values      # (B, T)
+    if best_jsd is None:
+        raise ValueError("candidate_layers must contain at least one layer.")
+    max_jsd_values = best_jsd
 
     # Map candidate index → actual layer number
     layer_tensor = torch.tensor(
@@ -210,12 +218,6 @@ def select_premature_layers_per_position(
         dtype=torch.long,
     )
     selected_layer_ids = layer_tensor[candidate_indices]     # (B, T)
-
-    # Gather the selected premature logits
-    selected_logits = torch.zeros_like(candidate_logits[0])
-    for i, logits in enumerate(candidate_logits):
-        mask = (candidate_indices == i).unsqueeze(-1)
-        selected_logits = torch.where(mask, logits, selected_logits)
 
     if stats is not None:
         stats.update(selected_layer_ids, max_jsd_values)
@@ -366,3 +368,64 @@ def dola_logits(
         mature_hidden,
         premature_hidden,
     )
+
+
+@torch.inference_mode()
+def dola_step_logits(
+    model: torch.nn.Module,
+    input_ids: torch.Tensor,
+    past_key_values=None,
+    candidate_premature_layers: Optional[List[int]] = None,
+    mature_layer: int = MATURE_LAYER,
+    alpha: float = 1.0,
+    fixed_premature_layer: Optional[int] = None,
+    stats: Optional[DoLaStats] = None,
+):
+    """Compute DoLa logits for the latest token, optionally using a KV cache.
+
+    ``input_ids`` is the full prompt on the first call and only the newly
+    generated token on subsequent calls. Every transformer layer still runs,
+    as required by DoLa, but previously computed attention keys/values are
+    reused. The returned cache is passed to the next call.
+    """
+    if candidate_premature_layers is None:
+        candidate_premature_layers = CANDIDATE_PREMATURE_LAYERS
+
+    out = model(
+        input_ids=input_ids,
+        past_key_values=past_key_values,
+        output_hidden_states=True,
+        use_cache=True,
+    )
+    all_hidden = list(out.hidden_states[1:])
+    expected_layers = int(model.config.num_hidden_layers)
+    if len(all_hidden) != expected_layers:
+        raise RuntimeError(
+            f"Expected {expected_layers} transformer hidden states, got {len(all_hidden)}."
+        )
+    hidden_states = [h[:, -1:, :] for h in all_hidden]
+    mature_hidden = hidden_states[mature_layer]
+    mature_logits = model.lm_head(mature_hidden).float()
+
+    if fixed_premature_layer is not None:
+        premature_hidden = hidden_states[fixed_premature_layer]
+        premature_logits = _layer_logits(model, premature_hidden).float()
+        selected_layers = torch.full(
+            mature_logits.shape[:2], fixed_premature_layer,
+            device=mature_logits.device, dtype=torch.long,
+        )
+    else:
+        candidate_indices, premature_logits, selected_layers = (
+            select_premature_layers_per_position(
+                model, hidden_states, candidate_premature_layers,
+                mature_layer, stats=stats,
+            )
+        )
+        premature_logits = premature_logits.float()
+        premature_hidden = torch.zeros_like(mature_hidden)
+        for i, layer_idx in enumerate(candidate_premature_layers):
+            mask = (candidate_indices == i).unsqueeze(-1)
+            premature_hidden = torch.where(mask, hidden_states[layer_idx], premature_hidden)
+
+    contrastive_logits = mature_logits - alpha * premature_logits
+    return contrastive_logits, selected_layers, mature_hidden, premature_hidden, out.past_key_values
