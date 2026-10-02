@@ -194,6 +194,25 @@ python run_experiment.py --limit 1 --samples 1 --max-new-tokens 8 --output-dir r
 
 The all-strategies experiment can be compute-intensive, particularly on CPU: it generates Base and DoLa candidate pools and evaluates candidates with the ENN. The run estimates exact-match accuracy against `eval_questions.json`; it is a small local dataset, not a substitute for a larger held-out benchmark. Ground-truth labels are used only after inference for evaluation.
 
+### Interactive semantic verification
+
+Activate the project virtual environment, then start the interactive comparison mode:
+
+```bash
+source llm_hallucination_env/bin/activate
+python main.py --mode ask --sc-samples 5 --max-new-tokens 48
+```
+
+Enter a question at each prompt; submit a blank prompt to exit. The default output compares Base TinyLlama, DoLa, Self-Consistency, DoLa + ENN, and the final selection. Add `--verbose` to display candidate answers and diagnostics. `--quiet` hides startup details. `--use-rag` enables optional Wikipedia evidence, and `--max-new-tokens` controls answer generation. `results.csv` and `comparison_results.csv` are updated for each question; no accuracy claim is made without labeled evaluation data.
+
+The existing `checkpoints/enn_best.pt` is a token-prediction Epinet, not an answer-correctness classifier. To train the separate reliability ENN, provide a JSONL file with labeled rows such as `{"features":{"mean_token_confidence":0.7,"factuality_score":0.8},"reliable":1}` and run:
+
+```bash
+llm_hallucination_env/bin/python train_reliability_enn.py --data reliability_labels.jsonl
+```
+
+Use question-disjoint labeled data for calibration. `evaluate.py` requires annotated `ground_truth` and `hallucination_label` columns. `ablation.py` summarizes method-wise labeled predictions and requires a `method` column. Neither script treats the ten-answer demo file as a hallucination benchmark.
+
 ### Self-Consistency output files
 
 ```text
