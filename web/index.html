@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f8fc">
+  <title>Ask · Neural</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Neural Ask home"><span class="brand-mark">✳</span><span>neural<span class="brand-light">/ask</span></span></a>
+      <button id="new-chat" class="new-chat"><span>＋</span> New conversation <kbd>⌘ K</kbd></button>
+      <div class="side-label">YOUR SPACE</div>
+      <div class="side-note"><span class="live-dot"></span><span>Local model<br><small>Private · running on your device</small></span></div>
+      <div class="side-bottom"><div class="avatar">N</div><div><strong>TinyLlama</strong><small>DoLa · Self-consistency</small></div><span class="more">···</span></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"><div class="crumb">Workspace <span>/</span> <strong>Ask</strong></div><div class="top-right"><span class="model-pill"><i></i> TinyLlama 1.1B</span><button class="icon-btn" id="clear-chat" title="Clear conversation" aria-label="Clear conversation">↻</button></div></header>
+      <section id="welcome" class="welcome">
+        <div class="eyebrow"><span class="spark">✳</span> YOUR LOCAL AI ASSISTANT</div>
+        <h1>Good questions<br>lead somewhere<span>.</span></h1>
+        <p>Ask anything. Explore an idea. Keep the conversation going.<br>Your answers are generated locally on your machine.</p>
+      </section>
+
+      <section id="conversation" class="conversation" aria-live="polite"></section>
+      <div class="composer-wrap">
+        <form id="chat-form" class="composer">
+          <textarea id="question" rows="1" placeholder="Ask a follow-up or start something new…" aria-label="Your message"></textarea>
+          <div class="composer-foot"><div class="compose-hint"><span>↵</span> to send <span class="hint-divider">·</span> shift + ↵ for new line</div><button id="send" class="send" type="submit" aria-label="Send message">↑</button></div>
+        </form>
+        <div class="disclaimer">Neural can make mistakes. Check important information.</div>
+      </div>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
