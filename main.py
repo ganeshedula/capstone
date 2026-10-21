@@ -881,7 +881,7 @@ def append_interactive_result(question, base, dola, sc_answer, enn_answer, winne
         writer = csv.DictWriter(stream, fieldnames=all_fields); writer.writerow(row)
 
 
-def _short(text, limit=250):
+def _short(text, limit=800):
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[:limit - 3].rstrip() + "..."
 
@@ -940,7 +940,7 @@ def print_interactive_report(question, base, dola, sc_answer, enn, winner, decis
     print(f"║ Reliability: {_pct(m.get('reliability_probability')):<60} ║")
     print(f"║ Hallucination risk: {_pct(m.get('hallucination_score')):<52} ║")
     print("║ Answer:                                                                ║")
-    for answer_line in textwrap.wrap(_short(winner.get("answer"), 250), width=68) or [""]:
+    for answer_line in textwrap.wrap(" ".join(str(winner.get("answer", "")).split()), width=68) or [""]:
         print(f"║ {answer_line:<68} ║")
     print("╚══════════════════════════════════════════════════════════════════════╝")
     append_interactive_result(question, base, dola, sc_answer, enn.get("answer", ""), winner, decision, clustering)
@@ -1011,7 +1011,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sc-samples", type=int, default=5, help="DoLa candidates per interactive self-consistency vote")
     p.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature for interactive self-consistency")
     p.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling cutoff for interactive self-consistency")
-    p.add_argument("--max-new-tokens", type=int, default=48, help="Maximum answer length")
+    p.add_argument("--max-new-tokens", type=int, default=256, help="Maximum answer length")
     p.add_argument("--reliability-threshold", type=float, default=0.55)
     p.add_argument("--consistency-threshold", type=float, default=0.4)
     p.add_argument("--hallucination-threshold", type=float, default=0.55)
