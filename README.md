@@ -129,13 +129,13 @@ where $M_t^j = \frac{1}{2}(p_t^m + p_t^j)$ and $D_{\mathrm{KL}}(P \parallel Q) =
 **Dynamic Premature Layer Selection**:
 
 $$
-j_t^* = \arg\max_{j \in \mathcal{J}} \mathrm{JSD}(p_t^m \parallel p_t^j), \qquad \mathcal{J} = \{0, 4, 8, 12, 16, 20\}
+j_t^{\ast} = \mathop{\mathrm{argmax}}_{j \in \mathcal{J}} \mathrm{JSD}(p_t^m \parallel p_t^j), \qquad \mathcal{J} = \{0, 4, 8, 12, 16, 20\}
 $$
 
 **Contrastive Logits & Distribution**:
 
 $$
-\ell_t^{D} = \ell_t^m - \alpha \cdot \ell_t^{j_t^*}
+\ell_t^{D} = \ell_t^m - \alpha \cdot \ell_t^{j_t^{\ast}}
 $$
 
 $$
@@ -153,7 +153,7 @@ The Epinet models parameter/epistemic uncertainty via an epistemic index vector 
 **Input Representation**:
 
 $$
-x_t = \left[ h_t^m \; ; \; \mathrm{RMSNorm}(h_t^{j_t^*}) \right] \in \mathbb{R}^{2d} = \mathbb{R}^{4096}
+x_t = \left[ h_t^m \; ; \; \mathrm{RMSNorm}(h_t^{j_t^{\ast}}) \right] \in \mathbb{R}^{2d} = \mathbb{R}^{4096}
 $$
 
 **Frozen Prior Network $f_0(x, z)$**:
@@ -243,7 +243,7 @@ $$
 **Plurality Voting**:
 
 $$
-v(c) = \sum_{i=1}^N \mathbb{1}[\tilde{a}_i = c], \qquad c^* = \arg\max_c v(c)
+v(c) = \sum_{i=1}^N \mathbf{1}[\tilde{a}_i = c], \qquad c^{\ast} = \mathop{\mathrm{argmax}}_c v(c)
 $$
 
 **ENN Confidence-Weighted Voting**:
@@ -258,13 +258,13 @@ $$
 Weighted score for cluster $c$:
 
 $$
-S(c) = \sum_{i: \tilde{a}_i = c} w_i, \qquad c^* = \arg\max_c S(c)
+S(c) = \sum_{i: \tilde{a}_i = c} w_i, \qquad c^{\ast} = \mathop{\mathrm{argmax}}_c S(c)
 $$
 
 Normalized vote confidence:
 
 $$
-\mathrm{Conf}(c^*) = \frac{S(c^*)}{\sum_k S(c_k)}
+\mathrm{Conf}(c^{\ast}) = \frac{S(c^{\ast})}{\sum_k S(c_k)}
 $$
 
 ---
@@ -298,9 +298,9 @@ $$
 *Default Penalty Weights $\lambda_p$:*
 - Hallucination Score: $0.22$
 - Contradiction Score: $0.20$
-- Unsupported Claim: $0.14 \times (1 - \mathrm{claim\_support})$
-- Unsupported Evidence: $0.10 \times (1 - \mathrm{evidence\_support})$
-- High Entropy: $0.06 \times \mathrm{entropy\_penalty}$
+- Unsupported Claim: $0.14 \times (1 - \text{claim support})$
+- Unsupported Evidence: $0.10 \times (1 - \text{evidence support})$
+- High Entropy: $0.06 \times \text{entropy penalty}$
 
 **Composite Candidate Score**:
 
@@ -368,7 +368,7 @@ python main.py --mode train --n-c4 20 --epochs 2 --batch-size 1
 ```
 *What happens:*
 1. `Neural Network/data_prep.py` streams texts from `allenai/c4`.
-2. For each document, TinyLlama computes layer 21 ($h_m$) and selects $j^* \in \{0, 4, 8, 12, 16, 20\}$ using JSD.
+2. For each document, TinyLlama computes layer 21 ($h_m$) and selects $j^{\ast} \in \{0, 4, 8, 12, 16, 20\}$ using JSD.
 3. Extracted features are post-normalized via RMSNorm and saved to `Neural Network/features_cache.npz`.
 4. `Neural Network/enn_torch.py` loads the cache, trains the learnable residual $f_\phi$ with AdamW and ReduceLROnPlateau, and saves `checkpoints/enn_best.pt`.
 
@@ -390,8 +390,8 @@ python main.py --mode eval --no-baseline --no-enn --n-questions 10
 python main.py --mode eval --no-baseline --no-dola --enn-weight 0.1 --n-questions 10
 ```
 *What happens:*
-1. For each prompt, `Neural Network/dola.py` selects $j_t^*$ dynamically per token.
-2. The contrastive distribution $p_t^D = \mathrm{softmax}(W h_t^m - \alpha W \mathrm{RMSNorm}(h_t^{j^*}))$ is decoded.
+1. For each prompt, `Neural Network/dola.py` selects $j_t^{\ast}$ dynamically per token.
+2. The contrastive distribution $p_t^D = \mathrm{softmax}(W h_t^m - \alpha W \mathrm{RMSNorm}(h_t^{j^{\ast}}))$ is decoded.
 3. If ENN is active, sampled residuals $\Delta h(x_t, z_k)$ provide token predictive and epistemic uncertainty diagnostics.
 
 ---
