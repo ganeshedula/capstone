@@ -1,66 +1,337 @@
-# DoLa + ENN Reliability Pipeline
+# DoLa + ENN Reliability Pipeline for Small Language Models
 
-Research code for TinyLlama inference with **DoLa (Decoding by Contrasting Layers)** and a PyTorch **Epistemic Neural Network (Epinet)**. The current repository also includes candidate sampling, majority-vote Self-Consistency, and ENN-confidence-weighted voting.
+> **Research codebase and interactive console for TinyLlama-1.1B inference combining Decoding by Contrasting Layers (DoLa), Epistemic Neural Networks (Epinet), Self-Consistency Voting, and Multi-Signal Hallucination Gating.**
 
-> This is an experimental project. Improvements in accuracy, reliability, or calibration are not assumed; use the evaluation commands and report measured results.
+---
 
 ## Contents
 
-- [What is implemented](#what-is-implemented)
-- [Download and install](#download-and-install)
-- [Model, data, and checkpoint files](#model-data-and-checkpoint-files)
-- [Run the main pipeline](#run-the-main-pipeline)
-- [Run the Self-Consistency experiments](#run-the-self-consistency-experiments)
-- [Evaluation modes and commands](#evaluation-modes-and-commands)
-- [Configuration and outputs](#configuration-and-outputs)
-- [Project layout](#project-layout)
-- [Troubleshooting](#troubleshooting)
+- [Overview & Core Contributions](#overview--core-contributions)
+- [System Architecture](#system-architecture)
+- [Mathematical Formulations](#mathematical-formulations)
+  - [1. Layer-Contrastive Decoding (DoLa)](#1-layer-contrastive-decoding-dola)
+  - [2. Epistemic Neural Network (Epinet) Architecture & Loss](#2-epistemic-neural-network-epinet-architecture--loss)
+  - [3. Uncertainty Quantification & Decomposition](#3-uncertainty-quantification--decomposition)
+  - [4. Self-Consistency & Confidence-Weighted Voting](#4-self-consistency--confidence-weighted-voting)
+  - [5. Multi-Signal Answer Scoring & Abstention Gating](#5-multi-signal-answer-scoring--abstention-gating)
+  - [6. Calibration & Evaluation Metrics](#6-calibration--evaluation-metrics)
+- [Step-by-Step Execution Workflows](#step-by-step-execution-workflows)
+  - [Pipeline 1: Offline Feature Extraction & Epinet Training](#pipeline-1-offline-feature-extraction--epinet-training)
+  - [Pipeline 2: Runtime Inference (Base, DoLa, DoLa + ENN)](#pipeline-2-runtime-inference-base-dola-dola--enn)
+  - [Pipeline 3: Self-Consistency Experiments](#pipeline-3-self-consistency-experiments)
+  - [Pipeline 4: Multi-Signal Verification & Factuality Review](#pipeline-4-multi-signal-verification--factuality-review)
+  - [Pipeline 5: Interactive Web Console (Streamlit UI)](#pipeline-5-interactive-web-console-streamlit-ui)
+- [Download and Install](#download-and-install)
+- [Model, Data, and Checkpoint Assets](#model-data-and-checkpoint-assets)
+- [CLI Reference & Evaluation Modes](#cli-reference--evaluation-modes)
+- [Archived Benchmark Results & Findings](#archived-benchmark-results--findings)
+- [Configuration and Outputs](#configuration-and-outputs)
+- [Project Layout](#project-layout)
+- [Troubleshooting & FAQ](#troubleshooting--faq)
+- [References](#references)
 
-## What is implemented
+---
 
-### Main inference and training path
+## Overview & Core Contributions
 
-1. `main.py` loads the TinyLlama tokenizer and model once.
-2. `Neural Network/dola.py` runs the transformer and collects hidden states with shape `(batch, tokens, hidden_size)`. For each token it selects a premature layer using Jensen–Shannon divergence, then computes contrastive logits:
+Small language models optimize continuation likelihood rather than factual correctness, which often leads to fluent but unsupported hallucinations. Softmax output probabilities are notoriously overconfident and uncalibrated to answer-level truth.
 
-   ```text
-   DoLa logits = mature logits - alpha * premature logits
-   ```
+This repository decouples **hallucination mitigation at generation** from **post-generation detection and abstention**:
+1. **Contrastive Decoding (DoLa):** Contrasts deeper transformer layers against dynamically selected intermediate layers to amplify emerging factual knowledge without fine-tuning.
+2. **Epistemic Uncertainty Estimation (Epinet):** Augments the frozen transformer representations with a sampled epistemic variable $z \sim \mathcal{N}(0, I)$, disentangling aleatoric data noise from epistemic model uncertainty.
+3. **Candidate Sampling & Consensus (Self-Consistency):** Generates candidate answers and applies plurality or ENN-entropy-weighted voting.
+4. **Multi-Signal Answer Scoring & Abstention Gating:** Combines token confidence, semantic consistency, factuality review, and RAG evidence to decide whether to **ACCEPT** an answer or **REGENERATE / ABSTAIN**.
 
-3. `Neural Network/data_prep.py` extracts mature and premature features from C4, along with next-token labels. Features have shape `(examples, hidden_size)`; mature and premature features are concatenated for the ENN. Documents, rather than individual tokens, are assigned to train and validation splits.
-4. `Neural Network/enn_torch.py` trains the PyTorch Epinet on C4 next-token prediction. At inference it can return sampled logits and predictive, aleatoric, and epistemic uncertainty values.
-5. `Neural Network/evaluate.py` evaluates the baseline, DoLa, and DoLa + ENN using TruthfulQA multiple-choice MC1 and MC2 scores.
+---
 
-The older `Neural Network/enn_jax.py` and `Neural Network/enn_checkpoint.pkl` are legacy JAX artifacts. The current `main.py` uses `enn_torch.py` and expects a PyTorch checkpoint at `checkpoints/enn_best.pt`.
+## System Architecture
 
-### Self-Consistency path
+```mermaid
+flowchart TD
+    subgraph Input ["1. Input & Context"]
+        Prompt["User Question / Prompt q"] --> Tokenizer["TinyLlama Chat Tokenizer"]
+        RAG["WikiRAG / DuckDuckGo Context (Optional)"] -.-> Prompt
+    end
 
-`run_experiment.py` reuses the model, DoLa decoder, and PyTorch ENN. It samples candidates with temperature/top-p settings and supports:
+    subgraph LLM ["2. Transformer Backbone (TinyLlama-1.1B)"]
+        Tokenizer --> FwdPass["Forward Pass (Frozen Layers 0..21)"]
+        FwdPass --> MatureH["Mature Hidden State h_m (Layer 21)"]
+        FwdPass --> PrematureH["Intermediate States h_j (Layers 0, 4, 8, 12, 16, 20)"]
+    end
 
-- `dola`: one DoLa candidate
-- `dola_self_consistency`: DoLa candidates with plurality voting
-- `dola_enn_self_consistency`: DoLa candidates scored by ENN predictive uncertainty, followed by confidence-weighted voting
-- `all`: the six-method ablation and Self-Consistency sample-count comparisons
+    subgraph DoLa ["3. Layer-Contrastive Decoding (DoLa)"]
+        PrematureH --> JSD["Compute JSD(p_m || p_j) for all j"]
+        MatureH --> JSD
+        JSD --> BestLayer["Dynamic Selection: j* = argmax JSD"]
+        BestLayer --> PrematureLogits["Premature Logits: W * RMSNorm(h_j*)"]
+        MatureH --> MatureLogits["Mature Logits: W * h_m"]
+        MatureLogits & PrematureLogits --> Contrast["Contrast: l_DoLa = Mature - alpha * Premature"]
+    end
 
-The ENN confidence weight is defined as `1 - predictive_entropy / log(vocabulary_size)`. It is an entropy-derived score, **not** a calibrated probability of correctness. The normalized weighted-vote result is the winning answer’s fraction of total vote weight, not a calibrated answer probability. Calibration metrics compare these scores with observed exact-match correctness.
+    subgraph Epinet ["4. Epistemic Neural Network (Epinet)"]
+        MatureH & BestLayer --> ConcatFeatures["Concat Features x = [h_m; RMSNorm(h_j*)] in R^4096"]
+        ZSample["Sample Epistemic Indices z_k ~ N(0, I_6)"] --> PriorNet["Frozen Prior Net f_0(x, z)"]
+        ZSample --> LearnNet["Trainable Net f_phi(x, z)"]
+        ConcatFeatures --> PriorNet & LearnNet
+        PriorNet & LearnNet --> EpinetOutput["Residual Delta_h = f_0 + f_phi in R^2048"]
+        EpinetOutput --> LogitSamples["Logit Samples: (Delta_h) * W^T"]
+        LogitSamples --> Uncertainty["Uncertainty Decomp: Epistemic & Predictive Entropy"]
+    end
 
-The ENN was trained with DoLa-derived features. In the `Base + ENN` ablation, Base generates the candidate while the existing DoLa-compatible ENN features are used to estimate its uncertainty.
+    subgraph Generation ["5. Generation & Sampling"]
+        Contrast --> Decoding{"Decoding Mode"}
+        Decoding -- "Greedy / Single" --> SingleAns["Single Candidate"]
+        Decoding -- "Sampling (Temp=0.7, Top-p=0.9)" --> MultiAns["N Candidates (e.g., N=5)"]
+    end
 
-## Download and install
+    subgraph Aggregation ["6. Aggregation & Verification"]
+        MultiAns --> SC["Self-Consistency (Plurality / ENN Confidence Weighted)"]
+        MultiAns --> SemCluster["Semantic Embedding & Clustering"]
+        SingleAns & SC --> FactCheck["Prompted Factuality Judge & Evidence Alignment"]
+    end
 
-### 1. Clone this repository
+    subgraph Decision ["7. Multi-Signal Scoring & Decision Gate"]
+        SemCluster & FactCheck & Uncertainty --> MultiSignal["Score Aggregator: Weighted Positives - Penalties"]
+        MultiSignal --> Gating{"Passes Gating Thresholds?"}
+        Gating -- "Yes" --> Accept["Decision: ACCEPT (Trustworthy Answer)"]
+        Gating -- "No" --> Reject["Decision: REGENERATE / ABSTAIN"]
+    end
+```
 
+---
+
+## Mathematical Formulations
+
+### 1. Layer-Contrastive Decoding (DoLa)
+
+Let $h_t^l \in \mathbb{R}^d$ ($d=2048$) denote the hidden state at layer $l \in \{0, \dots, 21\}$ for token position $t$. Let $W \in \mathbb{R}^{|V| \times d}$ denote the language model head matrix ($|V| = 32{,}000$).
+
+1. **Intermediate Layer Logits**:
+   $$\ell_t^j = W \cdot \operatorname{RMSNorm}(h_t^j), \qquad p_t^j = \operatorname{softmax}(\ell_t^j)$$
+2. **Mature Layer Logits** (Layer $m=21$; already post-RMSNorm in TinyLlama):
+   $$\ell_t^m = W \cdot h_t^m, \qquad p_t^m = \operatorname{softmax}(\ell_t^m)$$
+3. **Jensen-Shannon Divergence (JSD)**:
+   $$\operatorname{JSD}(p_t^m \parallel p_t^j) = \frac{1}{2} D_{\text{KL}}(p_t^m \parallel M_t^j) + \frac{1}{2} D_{\text{KL}}(p_t^j \parallel M_t^j)$$
+   where $M_t^j = \frac{1}{2}(p_t^m + p_t^j)$ and $D_{\text{KL}}(P \parallel Q) = \sum_{v \in V} P(v) \log \frac{P(v)}{Q(v)}$.
+4. **Dynamic Premature Layer Selection**:
+   $$j_t^* = \arg\max_{j \in \mathcal{J}} \operatorname{JSD}(p_t^m \parallel p_t^j), \qquad \mathcal{J} = \{0, 4, 8, 12, 16, 20\}$$
+5. **Contrastive Logits & Distribution**:
+   $$\ell_t^{D} = \ell_t^m - \alpha \cdot \ell_t^{j_t^*}$$
+   $$p_t^D = \operatorname{softmax}(\ell_t^D)$$
+   *(Active default hyperparameter: $\alpha = 0.05$ or $1.0$ depending on experiment configuration).*
+
+---
+
+### 2. Epistemic Neural Network (Epinet) Architecture & Loss
+
+The Epinet models parameter/epistemic uncertainty via an epistemic index vector $z \sim \mathcal{N}(0, I_{d_z})$ with dimension $d_z = 6$.
+
+1. **Input Representation**:
+   $$x_t = \left[ h_t^m \; ; \; \operatorname{RMSNorm}(h_t^{j_t^*}) \right] \in \mathbb{R}^{2d} = \mathbb{R}^{4096}$$
+2. **Frozen Prior Network $f_0(x, z)$**:
+   $$g_0(x) = \operatorname{Linear}_{512 \to (2048 \times 6)}\Big(\operatorname{ReLU}\big(\operatorname{Linear}_{512 \to 512}(\operatorname{ReLU}(\operatorname{Linear}_{4096 \to 512}(x)))\big)\Big)$$
+   $$f_0(x, z) = \operatorname{Reshape}(g_0(x), [2048, 6]) \cdot z \in \mathbb{R}^{2048}$$
+   *Parameters of $f_0$ are randomly initialized and permanently frozen ($\nabla_\theta f_0 = 0$).*
+3. **Trainable Residual Network $f_\phi(x, z)$**:
+   $$g_\phi(x) = \operatorname{Linear}_{512 \to (2048 \times 6)}\Big(\operatorname{ReLU}\big(\operatorname{Linear}_{512 \to 512}(\operatorname{ReLU}(\operatorname{Linear}_{4096 \to 512}(x)))\big)\Big)$$
+   $$f_\phi(x, z) = \operatorname{Reshape}(g_\phi(x), [2048, 6]) \cdot z \in \mathbb{R}^{2048}$$
+4. **Combined Epinet Residual**:
+   $$\Delta h(x_t, z) = f_0(x_t, z) + f_\phi(x_t, z)$$
+5. **Training Loss (Sampled Cross-Entropy on C4)**:
+   For $K$ Monte Carlo index draws $z_1, \dots, z_K \sim \mathcal{N}(0, I_6)$:
+   $$\mathcal{L}(\phi) = \frac{1}{|\mathcal{D}| K} \sum_{(x_t, y_t) \in \mathcal{D}} \sum_{k=1}^K \operatorname{CrossEntropy}\left( \ell_t^D + W \cdot [f_0(x_t, z_k) + f_\phi(x_t, z_k)], \; y_t \right)$$
+
+---
+
+### 3. Uncertainty Quantification & Decomposition
+
+Given an input representation $x$ and $K$ epistemic index draws $z_k$:
+
+1. **Sample Logits & Probability Vectors**:
+   $$\ell^{(k)} = \ell^D + W \cdot \Delta h(x, z_k), \qquad p^{(k)} = \operatorname{softmax}(\ell^{(k)}) \in \Delta^{|V|-1}$$
+2. **Mean Predictive Distribution**:
+   $$\bar{p} = \frac{1}{K} \sum_{k=1}^K p^{(k)}$$
+3. **Total Predictive Uncertainty (Entropy of the Mean)**:
+   $$\mathcal{H}_{\text{pred}} = H(\bar{p}) = -\sum_{v \in V} \bar{p}(v) \log \bar{p}(v)$$
+4. **Aleatoric Uncertainty (Mean of Entropies / Data Noise)**:
+   $$\mathcal{H}_{\text{alea}} = \mathbb{E}_z [H(p^{(k)})] = \frac{1}{K} \sum_{k=1}^K \left( -\sum_{v \in V} p^{(k)}(v) \log p^{(k)}(v) \right)$$
+5. **Epistemic Uncertainty (Mutual Information $I(Y; Z \mid X)$ / Model Ignorance)**:
+   $$\mathcal{U}_{\text{epi}} = \max\left(0, \; H(\bar{p}) - \frac{1}{K} \sum_{k=1}^K H(p^{(k)})\right)$$
+
+---
+
+### 4. Self-Consistency & Confidence-Weighted Voting
+
+Given $N$ candidate answers $\{a_1, a_2, \dots, a_N\}$ sampled at temperature $T=0.7$, top-$p=0.9$:
+
+1. **Answer Normalization**:
+   $$\tilde{a}_i = \operatorname{Normalize}(\operatorname{ExtractFinalAnswer}(a_i))$$
+2. **Plurality Voting**:
+   $$v(c) = \sum_{i=1}^N \mathbb{1}[\tilde{a}_i = c], \qquad c^* = \arg\max_c v(c)$$
+3. **ENN Confidence-Weighted Voting**:
+   For candidate $i$ spanning answer tokens $t \in \{1, \dots, T_i\}$, the average predictive entropy is $\bar{H}_i = \frac{1}{T_i} \sum_{t=1}^{T_i} H(\bar{p}_{i, t})$.
+   The heuristic confidence weight $w_i \in [0, 1]$ is:
+   $$w_i = \operatorname{clip}\left(1 - \frac{\bar{H}_i}{\log |V|}, \; 0, \; 1\right)$$
+   Weighted score for cluster $c$:
+   $$S(c) = \sum_{i: \tilde{a}_i = c} w_i, \qquad c^* = \arg\max_c S(c)$$
+   Normalized vote confidence:
+   $$\text{Conf}(c^*) = \frac{S(c^*)}{\sum_k S(c_k)}$$
+
+---
+
+### 5. Multi-Signal Answer Scoring & Abstention Gating
+
+Implemented in `Neural Network/answer_selector.py`:
+
+1. **Positive Score Aggregation**:
+   $$S_{\text{pos}} = \frac{\sum_{m \in \mathcal{M}} w_m \cdot v_m}{\sum_{m \in \mathcal{M}} w_m}$$
+   *Default Positive Weights $w_m$:*
+   - Factuality Score: $0.24$
+   - Semantic Consistency: $0.22$
+   - Reliability Probability: $0.16$
+   - Claim Support: $0.10$
+   - Token Confidence: $0.08$
+   - Relevance Score: $0.08$
+   - Evidence Support Score: $0.08$
+   - Sequence Probability: $0.04$
+2. **Penalty Aggregation**:
+   $$P = \sum_{p \in \mathcal{P}} \lambda_p \cdot r_p$$
+   *Default Penalty Weights $\lambda_p$:*
+   - Hallucination Score: $0.22$
+   - Contradiction Score: $0.20$
+   - Unsupported Claim: $0.14 \times (1 - \text{claim\_support})$
+   - Unsupported Evidence: $0.10 \times (1 - \text{evidence\_support})$
+   - High Entropy: $0.06 \times \text{entropy\_penalty}$
+3. **Composite Candidate Score**:
+   $$S_{\text{final}} = \operatorname{clip}(S_{\text{pos}} - P, \; 0, \; 1)$$
+4. **Abstention Gating Criteria**:
+   An answer candidate is **ACCEPTED** only if:
+   $$\begin{aligned}
+   S_{\text{final}} &\ge \tau_{\text{reliability}} \quad (\text{default } 0.55) \\
+   \text{Semantic Consistency} &\ge \tau_{\text{consistency}} \quad (\text{default } 0.40) \\
+   \text{Factuality Score} &\ge \tau_{\text{factuality}} \quad (\text{default } 0.45) \\
+   \text{Hallucination Score} &\le \tau_{\text{hallucination}} \quad (\text{default } 0.55)
+   \end{aligned}$$
+   If any gate fails, the decision is **REGENERATE** (abstain and request fresh generation).
+
+---
+
+### 6. Calibration & Evaluation Metrics
+
+For $N$ evaluated examples partitioned into $B$ confidence bins $B_1, \dots, B_B$:
+
+1. **Expected Calibration Error (ECE)**:
+   $$\text{ECE} = \sum_{b=1}^B \frac{|B_b|}{N} |\operatorname{acc}(B_b) - \operatorname{conf}(B_b)|$$
+2. **Brier Score**:
+   $$\text{BS} = \frac{1}{N} \sum_{i=1}^N (c_i - y_i)^2$$
+3. **Negative Log-Likelihood (NLL)**:
+   $$\text{NLL} = -\frac{1}{N} \sum_{i=1}^N \left( y_i \log c_i + (1 - y_i) \log(1 - c_i) \right)$$
+4. **False Accept Rate (FAR) & False Reject Rate (FRR)**:
+   $$\text{FAR} = \frac{\text{FP}}{\text{FP} + \text{TN}}, \qquad \text{FRR} = \frac{\text{FN}}{\text{TP} + \text{FN}}$$
+
+---
+
+## Step-by-Step Execution Workflows
+
+### Pipeline 1: Offline Feature Extraction & Epinet Training
+
+```bash
+# Step 1: Extract C4 mature and premature hidden states into cache
+python main.py --mode extract --n-c4 20
+
+# Step 2: Train Epinet learnable branch on C4 next-token prediction
+python main.py --mode train --n-c4 20 --epochs 2 --batch-size 1
+```
+*What happens:*
+1. `Neural Network/data_prep.py` streams texts from `allenai/c4`.
+2. For each document, TinyLlama computes layer 21 ($h_m$) and selects $j^* \in \{0, 4, 8, 12, 16, 20\}$ using JSD.
+3. Extracted features are post-normalized via RMSNorm and saved to `Neural Network/features_cache.npz`.
+4. `Neural Network/enn_torch.py` loads the cache, trains the learnable residual $f_\phi$ with AdamW and ReduceLROnPlateau, and saves `checkpoints/enn_best.pt`.
+
+---
+
+### Pipeline 2: Runtime Inference (Base, DoLa, DoLa + ENN)
+
+```bash
+# Evaluate Base, DoLa, and DoLa + ENN on TruthfulQA MC1/MC2
+python main.py --mode eval --n-questions 10
+
+# Baseline only
+python main.py --mode eval --no-dola --no-enn --n-questions 10
+
+# DoLa only
+python main.py --mode eval --no-baseline --no-enn --n-questions 10
+
+# DoLa + ENN with logit blending
+python main.py --mode eval --no-baseline --no-dola --enn-weight 0.1 --n-questions 10
+```
+*What happens:*
+1. For each prompt, `Neural Network/dola.py` selects $j_t^*$ dynamically per token.
+2. The contrastive distribution $p_t^D = \operatorname{softmax}(W h_t^m - \alpha W \operatorname{RMSNorm}(h_t^{j^*}))$ is decoded.
+3. If ENN is active, sampled residuals $\Delta h(x_t, z_k)$ provide token predictive and epistemic uncertainty diagnostics.
+
+---
+
+### Pipeline 3: Self-Consistency Experiments
+
+```bash
+# Run all Self-Consistency ablations across candidate sample counts (1, 3, 5, 10)
+python run_experiment.py --strategy all --samples 1 3 5 10
+
+# Run DoLa plurality Self-Consistency
+python run_experiment.py --strategy dola_self_consistency --samples 5
+
+# Run DoLa + ENN confidence-weighted Self-Consistency
+python run_experiment.py --strategy dola_enn_self_consistency --samples 5
+```
+*What happens:*
+1. $N$ candidates are sampled per question ($T=0.7, p=0.9$).
+2. Candidate answers are normalized (`Neural Network/self_consistency.py`).
+3. For ENN-weighted voting, candidate predictive entropy is computed across tokens and converted into confidence weights $w_i = \operatorname{clip}(1 - \bar{H}_i/\log|V|, 0, 1)$.
+4. Results, calibration curves, ECE, and confusion breakdowns are saved to `results/`.
+
+---
+
+### Pipeline 4: Multi-Signal Verification & Factuality Review
+
+```bash
+# Interactive question answering with full multi-signal verification
+source llm_hallucination_env/bin/activate
+python main.py --mode ask --sc-samples 5 --max-new-tokens 48 --verbose
+```
+*What happens:*
+1. Generates Base, DoLa, and Self-Consistency candidate pools.
+2. `Neural Network/semantic_consistency.py` mean-pools hidden states and clusters answers at cosine threshold $0.78$.
+3. (Optional `--use-rag`): `Neural Network/rag.py` retrieves evidence passages from local Qdrant or DuckDuckGo.
+4. `Neural Network/factuality.py` prompts the model as an objective factuality judge, extracting structured JSON metrics.
+5. `Neural Network/answer_selector.py` evaluates gates and issues an `ACCEPT` or `REGENERATE` verdict.
+
+---
+
+### Pipeline 5: Interactive Web Console (Streamlit UI)
+
+```bash
+# Launch the interactive Streamlit Web Console
+python run_web.py --port 8501
+```
+*Features:*
+- Visual side-by-side comparison of Base, DoLa, DoLa + ENN, and Self-Consistency.
+- Token-by-token premature layer selection inspection.
+- Real-time gauges for predictive, aleatoric, and epistemic uncertainty.
+- Evidence drawer displaying retrieved Wikipedia and web snippets.
+- Detailed score breakdown showing positive contributions, applied penalties, and the final gating verdict.
+
+---
+
+## Download and Install
+
+### 1. Clone repository
 ```bash
 git clone https://github.com/ganeshedula/capstone.git
 cd capstone
 ```
 
-Run project commands from this repository root. The `Neural Network/` directory name contains a space; the scripts handle its import path, so do not run `main.py` from inside that directory.
-
-### 2. Create a Python environment
-
-Python 3.10 is the version used for development. Python 3.10 or newer is recommended.
-
+### 2. Set up environment
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate       # macOS / Linux
@@ -69,276 +340,152 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-The requirements install PyTorch, Transformers, Datasets, NumPy, PyYAML, Matplotlib, and tqdm. On Apple Silicon, install a PyTorch build with MPS support if you want Metal acceleration. On NVIDIA systems, install the PyTorch build matching your CUDA runtime. `main.py` automatically chooses CUDA, then MPS, then CPU; `run_experiment.py` uses the same device order and also has a `--device` override.
-
-The interactive WikiRag evidence backend additionally uses Qdrant, a Hugging Face sentence embedding model, and DuckDuckGo context expansion. Set `WIKIRAG_QDRANT_URL`, `WIKIRAG_QDRANT_COLLECTION`, and optionally `WIKIRAG_EMBEDDING_MODEL` before starting the app. For authenticated Qdrant deployments, set `WIKIRAG_QDRANT_API_KEY`. Defaults are `http://localhost:6333`, `wikipedia`, and `sentence-transformers/all-MiniLM-L6-v2`. The Qdrant collection must already contain vectors generated with the same embedding model; the adapter reads the `content`, `title`, and `url` payload fields produced by WikiRag's vectorization pipeline. `WIKIRAG_EXPAND_CONTEXT=true` enables DuckDuckGo expansion (enabled by default); set it to `false` to restrict evidence to Qdrant. The equivalent non-secret defaults are in the `rag` section of `config.yaml`.
-
-### 3. Download TinyLlama
-
-The model is not included in Git. The code expects the model files under:
-
-```text
-models/TinyLlama-1.1B-Chat-v1.0/
-```
-
-Download it with the Hugging Face CLI (installed with `huggingface_hub`):
-
+### 3. Download TinyLlama-1.1B
 ```bash
 python -m pip install -U huggingface_hub
 hf download TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
   --local-dir models/TinyLlama-1.1B-Chat-v1.0
 ```
 
-The model repository is [TinyLlama/TinyLlama-1.1B-Chat-v1.0](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0); the CLI download syntax is documented in the [Hugging Face Hub CLI guide](https://huggingface.co/docs/huggingface_hub/guides/cli). The weights require several gigabytes of disk space and additional RAM/VRAM for inference. The program falls back to CPU when no accelerator is available, but generation can be very slow.
-
-### 4. Verify the environment
-
+### 4. Verify environment
 ```bash
 python Verification/verify_pytorch.py
 ```
 
-Optional checks:
+---
 
-```bash
-python Verification/verify_datasets.py
-python Verification/verify_jax.py          # legacy JAX path only
-python Verification/verify_transformers.py  # downloads the small GPT-2 tokenizer
-python Verification/verify_all.py           # runs every check above
-```
-
-`verify_all.py` also checks optional libraries such as JAX, SciPy, scikit-learn, and SentencePiece that are not all required by the current PyTorch pipeline. It may download GPT-2 and access Hugging Face datasets.
-
-## Model, data, and checkpoint files
+## Model, Data, and Checkpoint Assets
 
 | Asset | How it is obtained | Needed for |
-|---|---|---|
-| TinyLlama model | Download into `models/TinyLlama-1.1B-Chat-v1.0/` as above | All model inference and training commands |
-| `eval_questions.json` | Included in the repository; can be replaced with your own compatible JSON | `before-after` and `run_experiment.py` |
-| C4 | Loaded from local C4 files when available; otherwise streamed from Hugging Face (`allenai/c4`, English train split) | ENN feature extraction/training and C4 evaluation |
-| TruthfulQA | Loaded by the `datasets` package when evaluation runs | `eval` and `dola-sweep` |
-| `Neural Network/features_cache.npz` | Included cache where available; otherwise generated by feature extraction | ENN training |
-| `checkpoints/enn_best.pt` | Created by `python main.py --mode train` | ENN evaluation, interactive ENN inference, and confidence-weighted experiments |
+| :--- | :--- | :--- |
+| **TinyLlama-1.1B** | Hugging Face Hub download into `models/TinyLlama-1.1B-Chat-v1.0/` | All inference, decoding, and evaluation |
+| **C4 Dataset** | Streamed via `allenai/c4` (Hugging Face Datasets) | Feature extraction and Epinet training |
+| **TruthfulQA** | Loaded automatically via `datasets` package | Multiple-choice MC1/MC2 evaluations |
+| **`eval_questions.json`** | Included in repository | Local testing and Self-Consistency ablations |
+| **`features_cache.npz`** | Generated via `python main.py --mode extract` | Epinet offline training |
+| **`checkpoints/enn_best.pt`** | Generated via `python main.py --mode train` | ENN inference, evaluation, and uncertainty scoring |
 
-The `models/`, `checkpoints/`, `dataset/`, `output/`, and `results/` directories are excluded by `.gitignore` (the feature cache and legacy JAX checkpoint currently tracked in `Neural Network/` are separate files). A fresh clone therefore needs the model download and, if you want ENN runs, a PyTorch ENN training run. The committed `enn_checkpoint.pkl` is not a substitute for `checkpoints/enn_best.pt`.
+---
 
-C4 does not need a manual download for the normal pipeline. If the expected local C4 shard directory is missing or contains Git LFS pointer files, feature extraction falls back to streaming from Hugging Face. Network access is required in that case. `c4-eval` also streams its held-out C4 examples.
+## CLI Reference & Evaluation Modes
 
-## Run the main pipeline
+| Command | Action |
+| :--- | :--- |
+| `python main.py` | Full pipeline: extract C4 features $\to$ train Epinet $\to$ evaluate TruthfulQA |
+| `python main.py --mode extract` | Extract C4 DoLa hidden states and build `features_cache.npz` |
+| `python main.py --mode train` | Train PyTorch Epinet and write `checkpoints/enn_best.pt` |
+| `python main.py --mode eval` | Benchmark Base, DoLa, and DoLa + ENN on TruthfulQA |
+| `python main.py --mode dola-sweep` | Sweep contrastive $\alpha \in [0.05, 1.0]$ and fixed premature layers |
+| `python main.py --mode ablation` | Sweep ENN logit weights to measure logit blending impact |
+| `python main.py --mode ask` | Interactive terminal console with semantic consistency & fact checking |
+| `python main.py --mode before-after` | Custom question evaluation before and after Epinet training |
+| `python main.py --mode c4-eval` | Token-level perplexity and loss evaluation on held-out C4 texts |
+| `python run_experiment.py` | Run Base / DoLa / SC / ENN Self-Consistency comparison suite |
+| `python run_web.py` | Launch the Streamlit interactive visualization console |
 
-### Full default run
+---
 
-```bash
-python main.py
+## Archived Benchmark Results & Findings
+
+Empirical findings from the 211-example held-out benchmark (169 TruthfulQA + 42 HaluEval-QA examples; 54 reliable / 157 unreliable ground-truth labels) documented in `research_paper/main.tex`:
+
+| Method | Accuracy | Balanced Acc. | Precision | Recall | F1 | AUROC | ECE | FAR (False Accept) | FRR (False Reject) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Base TinyLlama (E0)** | 28.4% | 50.1% | 25.6% | **94.4%** | 40.3% | 55.4% | 45.8% | 94.3% | **5.6%** |
+| **TinyLlama + DoLa (E5)** | 29.9% | 48.6% | 25.0% | 87.0% | 38.8% | 57.1% | 39.5% | 89.8% | 13.0% |
+| **DoLa + SC (E6)** | 65.4% | 56.7% | 34.4% | 38.9% | 36.5% | 57.1% | 20.7% | 25.5% | 61.1% |
+| **DoLa + ENN-V2 (E5b)** | 76.8% | 58.3% | 64.7% | 20.4% | 31.0% | 61.8% | **12.3%** | **3.8%** | 79.6% |
+| **DoLa + ENN-V2 + SC (E7)** | 76.8% | 58.3% | 64.7% | 20.4% | 31.0% | 61.8% | **12.3%** | **3.8%** | 79.6% |
+| **2048-D ENN Alone (E2-B)** | **78.2%** | **60.4%** | **72.2%** | 24.1% | 36.1% | **69.1%** | 11.6% | 3.2% | 75.9% |
+| **Complete Combined** | 72.5% | 62.7% | 46.0% | 42.6% | **44.2%** | 67.0% | 19.5% | 17.2% | 57.4% |
+
+### Key Scientific Insights:
+1. **Low False Accept Rate (FAR):** While Base TinyLlama accepts 94.3% of incorrect outputs, conservative DoLa + ENN reduces false acceptance to **3.8%** (operating as a high-specificity safety gate).
+2. **Representation Dominance:** The 2048-dimensional intermediate hidden representation provides the strongest ranking signal (AUROC 0.691), heavily outperforming superficial token probability heuristics.
+3. **Abstention vs. Correction:** The pipeline excels at **detecting unreliability and abstaining**, rather than universally preventing incorrect token generation.
+
+---
+
+## Configuration and Outputs
+
+Key configurations are managed in `config.yaml`:
+```yaml
+model:
+  path: "models/TinyLlama-1.1B-Chat-v1.0"
+training:
+  n_c4_samples: 20
+  batch_size: 1
+  epochs: 2
+  learning_rate: 0.0001
+  enn_hidden_dim: 512
+  epistemic_index_dim: 6
+  n_z_samples: 3
+dola:
+  alpha: 0.05
+  mature_layer: 21
+  candidate_layers: [0, 4, 8, 12, 16, 20]
+evaluation:
+  n_questions: 10
+  enn_weight: 0.0
+rag:
+  qdrant_url: "http://localhost:6333"
+  collection: "wikipedia"
+  expand_context: true
 ```
 
-This runs feature extraction, ENN training, and TruthfulQA evaluation in order. Current defaults come from `config.yaml`: 20 C4 texts, maximum feature length 128, 2 ENN epochs, batch size 1, 3 epistemic samples, DoLa `alpha=0.05`, 10 TruthfulQA questions, and ENN logit weight 0.0. For useful scientific comparisons, select enough data and hardware for the experiment rather than interpreting the smoke-test defaults as benchmark results.
+---
 
-### Run one stage at a time
-
-```bash
-# Extract C4 features and write Neural Network/features_cache.npz
-python main.py --mode extract --n-c4 20
-
-# Train the PyTorch ENN; writes checkpoints/enn_best.pt
-python main.py --mode train --n-c4 20 --epochs 2 --batch-size 1
-
-# Evaluate Base, DoLa, and DoLa + ENN on TruthfulQA MC1/MC2
-python main.py --mode eval --n-questions 10
-
-# Evaluate a later range of TruthfulQA examples
-python main.py --mode eval --n-questions 100 --start-idx 100
-```
-
-`--mode train` reuses `Neural Network/features_cache.npz` only when the cache version and extraction settings match. `--mode extract` currently forces feature recomputation each time; the `--force-extract` flag is accepted by the CLI but does not change that behavior.
-
-The current configured `--enn-weight` default is `0.0`, so the ENN logits do not affect the combined DoLa logits by default. Use a positive value to test logit blending, for example `--enn-weight 0.1`; treat this as an experimental parameter, not evidence of improvement.
-
-## Run the Self-Consistency experiments
-
-First create the current PyTorch ENN checkpoint if it is absent:
-
-```bash
-python main.py --mode train
-```
-
-Run all methods and the default candidate counts (N=1,3,5,10):
-
-```bash
-python run_experiment.py
-```
-
-Run just one strategy:
-
-```bash
-python run_experiment.py --strategy dola
-python run_experiment.py --strategy dola_self_consistency
-python run_experiment.py --strategy dola_enn_self_consistency
-```
-
-Adjust sample counts, generation controls, reproducibility seed, and output directory:
-
-```bash
-python run_experiment.py \
-  --samples 1 3 5 10 \
-  --temperature 0.7 \
-  --top-p 0.9 \
-  --max-new-tokens 16 \
-  --seed 42 \
-  --alpha 0.05 \
-  --output-dir results
-```
-
-`--samples` accepts any positive integer values; the default comparison is 1, 3, 5, and 10. Per-candidate random seeds are derived deterministically from `--seed`, the question index, and candidate index so runs can be reproduced while candidates remain stochastic. Candidate generation uses small batches to limit KV-cache memory and retries empty generations up to three times. A quick integration run can be limited to the first question and one candidate:
-
-```bash
-python run_experiment.py --limit 1 --samples 1 --max-new-tokens 8 --output-dir results/smoke
-```
-
-The all-strategies experiment can be compute-intensive, particularly on CPU: it generates Base and DoLa candidate pools and evaluates candidates with the ENN. The run estimates exact-match accuracy against `eval_questions.json`; it is a small local dataset, not a substitute for a larger held-out benchmark. Ground-truth labels are used only after inference for evaluation.
-
-### Interactive semantic verification
-
-Activate the project virtual environment, then start the interactive comparison mode:
-
-```bash
-source llm_hallucination_env/bin/activate
-python main.py --mode ask --sc-samples 5 --max-new-tokens 48
-```
-
-Enter a question at each prompt; submit a blank prompt to exit. The default output compares Base TinyLlama, DoLa, Self-Consistency, DoLa + ENN, and the final selection. Add `--verbose` to display candidate answers and diagnostics. `--quiet` hides startup details. `--use-rag` enables optional WikiRag evidence from Qdrant with DuckDuckGo expansion for weak matches, and `--max-new-tokens` controls answer generation. `results.csv` and `comparison_results.csv` are updated for each question; no accuracy claim is made without labeled evaluation data.
-
-The existing `checkpoints/enn_best.pt` is a token-prediction Epinet, not an answer-correctness classifier. To train the separate reliability ENN, provide a JSONL file with labeled rows such as `{"features":{"mean_token_confidence":0.7,"factuality_score":0.8},"reliable":1}` and run:
-
-```bash
-llm_hallucination_env/bin/python train_reliability_enn.py --data reliability_labels.jsonl
-```
-
-Use question-disjoint labeled data for calibration. `evaluate.py` requires annotated `ground_truth` and `hallucination_label` columns. `ablation.py` summarizes method-wise labeled predictions and requires a `method` column. Neither script treats the ten-answer demo file as a hallucination benchmark.
-
-### Self-Consistency output files
+## Project Layout
 
 ```text
-results/
-├── ablation_results.csv       # accuracy, reliability, risk/coverage, time
-├── calibration_results.csv    # accuracy, ECE, Brier, binary NLL, confidence means
-├── confidence_analysis.csv    # detailed aggregate reliability counts and metrics
-├── predictions.json           # candidates, votes, uncertainties, error analysis
-└── plots/
-    ├── accuracy_comparison.png
-    ├── confidence_distribution.png
-    ├── calibration_curve.png
-    └── risk_coverage.png
+├── main.py                         # Main CLI: feature extraction, training, evaluation, sweeps
+├── run_experiment.py               # Self-Consistency and ablation benchmark runner
+├── run_web.py                      # Interactive Streamlit Web Console launcher
+├── config.yaml                     # Pipeline configuration defaults
+├── eval_questions.json             # Labeled local test questions
+├── requirements.txt                # Python dependencies
+├── Model_load/
+│   ├── load_llama2.py              # Active TinyLlama loader and chat template builder
+│   └── load_llama.py               # Legacy model loader
+├── Neural Network/
+│   ├── dola.py                     # DoLa JSD computation, layer selection, contrastive logits
+│   ├── enn_torch.py                # Active PyTorch Epinet module, training loop, uncertainty decomposition
+│   ├── reliability_enn.py          # Answer-level epistemic reliability network
+│   ├── self_consistency.py         # Plurality and confidence-weighted voting
+│   ├── semantic_consistency.py     # Answer embedding and connected-component clustering
+│   ├── answer_selector.py          # Multi-signal scoring, penalty application, abstention gating
+│   ├── factuality.py               # Prompted LLM-as-a-judge factuality reviewer
+│   ├── claim_verifier.py           # Atomic claim extraction and evidence verification
+│   ├── rag.py                      # WikiRag Qdrant and DuckDuckGo evidence retriever
+│   ├── inference.py                # Autoregressive decoding and candidate sampling
+│   ├── data_prep.py                # C4 dataset streaming and feature extraction cache builder
+│   ├── evaluate.py                 # TruthfulQA MC1/MC2 benchmark evaluator
+│   ├── c4_eval.py                  # Held-out C4 token loss evaluation
+│   └── *_plots.py                  # Visualization generators
+├── web/
+│   ├── app.py                      # Streamlit interactive web dashboard
+│   ├── ui_helpers.py               # UI rendering helpers and gauges
+│   └── custom.css                  # Custom styling for the web console
+├── Verification/                   # PyTorch, CUDA/MPS, and dataset environment checks
+└── research_paper/                 # IEEE conference paper draft, LaTeX source, and figures
 ```
 
-`--enn-weight` is accepted by `run_experiment.py` for CLI compatibility, but does not change that runner's candidate-confidence weighting. The runner uses ENN predictive entropy to assign candidate weights; `--enn-weight` applies to the logit-blending path in `main.py`.
+---
 
-## Evaluation modes and commands
+## Troubleshooting & FAQ
 
-All `main.py` modes load the local TinyLlama model first. From the repository root:
+- **`models/TinyLlama-1.1B-Chat-v1.0` missing:** Ensure you have downloaded the weights using the Hugging Face CLI command in the setup instructions.
+- **`enn_best.pt` not found:** Run `python main.py --mode train` to generate the active PyTorch Epinet checkpoint.
+- **Legacy JAX Checkpoint:** `Neural Network/enn_checkpoint.pkl` is a legacy artifact; the active PyTorch pipeline expects `.pt` checkpoints created by `enn_torch.py`.
+- **MPS / CUDA Acceleration:** On Apple Silicon or NVIDIA GPUs, device selection is automatic (`cuda` $\to$ `mps` $\to$ `cpu`). Check your hardware using `python Verification/verify_pytorch.py`.
+- **RAG Dependencies:** To enable Qdrant and web search features, ensure `langchain_huggingface`, `qdrant-client`, and `ddgs` are installed via `requirements.txt`.
 
-| Command | What it runs |
-|---|---|
-| `python main.py --mode extract` | Extract/recompute C4 DoLa features and save the cache |
-| `python main.py --mode train` | Train the PyTorch ENN and write `checkpoints/enn_best.pt` and `results/training_history.json` |
-| `python main.py --mode eval` | Compare baseline, DoLa, and DoLa + ENN using TruthfulQA MC1/MC2 |
-| `python main.py --mode eval --no-dola --no-enn` | Baseline only |
-| `python main.py --mode eval --no-baseline --no-enn` | DoLa only |
-| `python main.py --mode eval --no-baseline --no-dola` | DoLa + ENN only, if a PyTorch checkpoint exists |
-| `python main.py --mode dola-sweep` | Sweep configured DoLa alpha values and fixed premature layers on the selected TruthfulQA range |
-| `python main.py --mode ablation` | Baseline, DoLa, DoLa + ENN, then several ENN-logit weights; results print to the terminal |
-| `python main.py --mode ask` | Interactive Base, DoLa, and (when checkpoint exists) DoLa + ENN generation |
-| `python main.py --mode before-after` | Score custom JSON questions, extract C4 features, train ENN, score again, and save JSON/plots |
-| `python main.py --mode c4-eval` | Compare token-level DoLa and DoLa + ENN metrics on C4 examples skipped past the configured training count |
-| `python main.py` or `python main.py --mode all` | Extract features, train ENN, then evaluate TruthfulQA |
-
-Examples:
-
-```bash
-# Baseline and DoLa on 50 TruthfulQA questions
-python main.py --mode eval --n-questions 50 --no-enn
-
-# DoLa + ENN with a nonzero ENN logit contribution
-python main.py --mode eval --no-baseline --no-dola --enn-weight 0.1
-
-# Tune DoLa on a validation range; do not report its best score as an unbiased test result
-python main.py --mode dola-sweep --n-questions 50 --start-idx 0
-
-# Before/after ENN training with your own question file
-python main.py --mode before-after \
-  --eval-questions eval_questions.json \
-  --output-dir output/before_after
-
-# Evaluate held-out C4 samples after skipping the configured training sample count
-python main.py --mode c4-eval --n-c4 20 --n-c4-eval 100
-
-# See all main.py command-line flags
-python main.py --help
-```
-
-The main `ablation` mode is the earlier baseline/DoLa/ENN logit-weight sweep; it is distinct from the six-method Self-Consistency ablation in `run_experiment.py`.
-
-## Configuration and outputs
-
-Edit `config.yaml` to change defaults used by `main.py`:
-
-| Section | Settings |
-|---|---|
-| `model` | Local model directory (the current `main.py` constant also points to `models/TinyLlama-1.1B-Chat-v1.0`) |
-| `training` | C4 sample count, feature length, batch size, epochs, learning rate, ENN width and epistemic sample count |
-| `dola` | Default contrastive `alpha` and mature layer setting |
-| `evaluation` | TruthfulQA question count and ENN logit blending weight |
-| `paths` | Intended result and checkpoint directory names |
-
-Some paths are constants in `main.py` and `Neural Network/data_prep.py`; changing a path in the YAML file does not redirect every module.
-
-Common generated artifacts:
-
-- `Neural Network/features_cache.npz`: C4 token features and document IDs for a document-level train/validation split.
-- `checkpoints/enn_best.pt`, `checkpoints/enn_epoch_*.pt`: current PyTorch ENN checkpoints.
-- `results/training_history.json`: ENN training and validation loss history.
-- `output/before_after/`: custom-question comparison JSON and plots.
-- `output/c4_eval/`: held-out C4 metrics and plots.
-- `results/`: Self-Consistency ablation tables, detailed predictions, and plots.
-
-Model weights, checkpoints, outputs, and results are ignored by Git. Keep backups of any generated checkpoint or result you need to retain.
-
-## Project layout
-
-```text
-main.py                         # main training, evaluation, sweep, and interactive CLI
-run_experiment.py               # Base/DoLa/ENN/Self-Consistency ablations and calibration
-config.yaml                     # main.py defaults
-eval_questions.json             # small example labeled evaluation set
-requirements.txt                # core Python dependencies
-Model_load/load_llama2.py       # active TinyLlama loader and chat prompt formatter
-Model_load/load_llama.py        # separate legacy/general Llama loader
-Neural Network/dola.py          # DoLa hidden-state, layer-selection, and logits logic
-Neural Network/enn_torch.py     # active PyTorch Epinet training and prediction
-Neural Network/enn_jax.py       # legacy JAX Epinet implementation
-Neural Network/data_prep.py     # C4 loading, feature extraction, cache, train/val split
-Neural Network/evaluate.py      # TruthfulQA MC1/MC2 evaluation
-Neural Network/inference.py     # autoregressive decoding and candidate sampling
-Neural Network/self_consistency.py # answer normalization and voting
-Neural Network/before_after_eval.py # custom labeled question evaluation
-Neural Network/c4_eval.py       # held-out C4 next-token evaluation
-Neural Network/*_plots.py       # evaluation visualizations
-Verification/                   # environment and dependency checks
-```
-
-## Troubleshooting
-
-- **Model files not found:** confirm that `models/TinyLlama-1.1B-Chat-v1.0/config.json`, tokenizer files, and model weights exist. Re-run the `hf download` command from the repository root.
-- **ENN checkpoint missing:** run `python main.py --mode train`. The committed `Neural Network/enn_checkpoint.pkl` is a legacy JAX checkpoint and is not loaded by the current PyTorch path.
-- **C4 or TruthfulQA download errors:** confirm internet access and retry. Both datasets are loaded through Hugging Face Datasets; C4 feature preparation can also use valid local shards.
-- **Slow CPU inference:** this project loads a 1.1B-parameter model. CPU is supported as a fallback, but generation and layer-contrast evaluation can be very slow. Use supported CUDA or Apple MPS acceleration where available, reduce question/sample counts during development, and keep full evaluation settings for final comparisons.
-- **Out-of-memory:** reduce `--batch-size` for ENN training. Self-Consistency candidate generation uses microbatches of two and retries individual candidates after an accelerator out-of-memory error.
-- **Stale ENN features:** cache metadata includes feature-cache version, C4 sample count, max length, and validation fraction. Use `python main.py --mode extract` to regenerate features (this mode always recomputes at present), then retrain the ENN.
-- **JAX verification fails:** JAX is not required for the active PyTorch pipeline. Use `python Verification/verify_pytorch.py` to check the runtime used by `main.py`.
+---
 
 ## References
 
-- [TinyLlama model on Hugging Face](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)
-- [Hugging Face Hub download CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)
-- [C4 dataset](https://huggingface.co/datasets/allenai/c4)
-- [TruthfulQA dataset](https://huggingface.co/datasets/truthfulqa/truthful_qa)
-- DoLa: Chuang et al., [DoLa: Decoding by Contrasting Layers Improves Factuality in Large Language Models](https://arxiv.org/abs/2309.03883)
+1. Chuang et al., [DoLa: Decoding by Contrasting Layers Improves Factuality in Large Language Models](https://arxiv.org/abs/2309.03883), ICLR 2024.
+2. Osband et al., [Epistemic Neural Networks](https://arxiv.org/abs/2107.08924), NeurIPS 2021.
+3. Wang et al., [Self-Consistency Improves Chain of Thought Reasoning in Language Models](https://arxiv.org/abs/2203.11171), ICLR 2023.
+4. Lin et al., [TruthfulQA: Measuring How Models Mimic Human Falsehoods](https://arxiv.org/abs/2109.07958), ACL 2022.
+5. Zhang et al., [TinyLlama: An Open-Source Small Language Model](https://arxiv.org/abs/2401.02385), 2024.
