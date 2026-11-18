@@ -106,19 +106,43 @@ flowchart TD
 
 Let $h_t^l \in \mathbb{R}^d$ ($d=2048$) denote the hidden state at layer $l \in \{0, \dots, 21\}$ for token position $t$. Let $W \in \mathbb{R}^{|V| \times d}$ denote the language model head matrix ($|V| = 32{,}000$).
 
-1. **Intermediate Layer Logits**:
-   $$\ell_t^j = W \cdot \operatorname{RMSNorm}(h_t^j), \qquad p_t^j = \operatorname{softmax}(\ell_t^j)$$
-2. **Mature Layer Logits** (Layer $m=21$; already post-RMSNorm in TinyLlama):
-   $$\ell_t^m = W \cdot h_t^m, \qquad p_t^m = \operatorname{softmax}(\ell_t^m)$$
-3. **Jensen-Shannon Divergence (JSD)**:
-   $$\operatorname{JSD}(p_t^m \parallel p_t^j) = \frac{1}{2} D_{\text{KL}}(p_t^m \parallel M_t^j) + \frac{1}{2} D_{\text{KL}}(p_t^j \parallel M_t^j)$$
-   where $M_t^j = \frac{1}{2}(p_t^m + p_t^j)$ and $D_{\text{KL}}(P \parallel Q) = \sum_{v \in V} P(v) \log \frac{P(v)}{Q(v)}$.
-4. **Dynamic Premature Layer Selection**:
-   $$j_t^* = \arg\max_{j \in \mathcal{J}} \operatorname{JSD}(p_t^m \parallel p_t^j), \qquad \mathcal{J} = \{0, 4, 8, 12, 16, 20\}$$
-5. **Contrastive Logits & Distribution**:
-   $$\ell_t^{D} = \ell_t^m - \alpha \cdot \ell_t^{j_t^*}$$
-   $$p_t^D = \operatorname{softmax}(\ell_t^D)$$
-   *(Active default hyperparameter: $\alpha = 0.05$ or $1.0$ depending on experiment configuration).*
+**Intermediate Layer Logits**:
+
+$$
+\ell_t^j = W \cdot \mathrm{RMSNorm}(h_t^j), \qquad p_t^j = \mathrm{softmax}(\ell_t^j)
+$$
+
+**Mature Layer Logits** (Layer $m=21$; already post-RMSNorm in TinyLlama):
+
+$$
+\ell_t^m = W \cdot h_t^m, \qquad p_t^m = \mathrm{softmax}(\ell_t^m)
+$$
+
+**Jensen-Shannon Divergence (JSD)**:
+
+$$
+\mathrm{JSD}(p_t^m \parallel p_t^j) = \frac{1}{2} D_{\mathrm{KL}}(p_t^m \parallel M_t^j) + \frac{1}{2} D_{\mathrm{KL}}(p_t^j \parallel M_t^j)
+$$
+
+where $M_t^j = \frac{1}{2}(p_t^m + p_t^j)$ and $D_{\mathrm{KL}}(P \parallel Q) = \sum_{v \in V} P(v) \log \frac{P(v)}{Q(v)}$.
+
+**Dynamic Premature Layer Selection**:
+
+$$
+j_t^* = \arg\max_{j \in \mathcal{J}} \mathrm{JSD}(p_t^m \parallel p_t^j), \qquad \mathcal{J} = \{0, 4, 8, 12, 16, 20\}
+$$
+
+**Contrastive Logits & Distribution**:
+
+$$
+\ell_t^{D} = \ell_t^m - \alpha \cdot \ell_t^{j_t^*}
+$$
+
+$$
+p_t^D = \mathrm{softmax}(\ell_t^D)
+$$
+
+*(Active default hyperparameter: $\alpha = 0.05$ or $1.0$ depending on experiment configuration).*
 
 ---
 
@@ -126,20 +150,47 @@ Let $h_t^l \in \mathbb{R}^d$ ($d=2048$) denote the hidden state at layer $l \in 
 
 The Epinet models parameter/epistemic uncertainty via an epistemic index vector $z \sim \mathcal{N}(0, I_{d_z})$ with dimension $d_z = 6$.
 
-1. **Input Representation**:
-   $$x_t = \left[ h_t^m \; ; \; \operatorname{RMSNorm}(h_t^{j_t^*}) \right] \in \mathbb{R}^{2d} = \mathbb{R}^{4096}$$
-2. **Frozen Prior Network $f_0(x, z)$**:
-   $$g_0(x) = \operatorname{Linear}_{512 \to (2048 \times 6)}\Big(\operatorname{ReLU}\big(\operatorname{Linear}_{512 \to 512}(\operatorname{ReLU}(\operatorname{Linear}_{4096 \to 512}(x)))\big)\Big)$$
-   $$f_0(x, z) = \operatorname{Reshape}(g_0(x), [2048, 6]) \cdot z \in \mathbb{R}^{2048}$$
-   *Parameters of $f_0$ are randomly initialized and permanently frozen ($\nabla_\theta f_0 = 0$).*
-3. **Trainable Residual Network $f_\phi(x, z)$**:
-   $$g_\phi(x) = \operatorname{Linear}_{512 \to (2048 \times 6)}\Big(\operatorname{ReLU}\big(\operatorname{Linear}_{512 \to 512}(\operatorname{ReLU}(\operatorname{Linear}_{4096 \to 512}(x)))\big)\Big)$$
-   $$f_\phi(x, z) = \operatorname{Reshape}(g_\phi(x), [2048, 6]) \cdot z \in \mathbb{R}^{2048}$$
-4. **Combined Epinet Residual**:
-   $$\Delta h(x_t, z) = f_0(x_t, z) + f_\phi(x_t, z)$$
-5. **Training Loss (Sampled Cross-Entropy on C4)**:
-   For $K$ Monte Carlo index draws $z_1, \dots, z_K \sim \mathcal{N}(0, I_6)$:
-   $$\mathcal{L}(\phi) = \frac{1}{|\mathcal{D}| K} \sum_{(x_t, y_t) \in \mathcal{D}} \sum_{k=1}^K \operatorname{CrossEntropy}\left( \ell_t^D + W \cdot [f_0(x_t, z_k) + f_\phi(x_t, z_k)], \; y_t \right)$$
+**Input Representation**:
+
+$$
+x_t = \left[ h_t^m \; ; \; \mathrm{RMSNorm}(h_t^{j_t^*}) \right] \in \mathbb{R}^{2d} = \mathbb{R}^{4096}
+$$
+
+**Frozen Prior Network $f_0(x, z)$**:
+
+$$
+g_0(x) = \mathrm{Linear}_{512 \to (2048 \times 6)}\Big(\mathrm{ReLU}\big(\mathrm{Linear}_{512 \to 512}(\mathrm{ReLU}(\mathrm{Linear}_{4096 \to 512}(x)))\big)\Big)
+$$
+
+$$
+f_0(x, z) = \mathrm{Reshape}(g_0(x), [2048, 6]) \cdot z \in \mathbb{R}^{2048}
+$$
+
+*Parameters of $f_0$ are randomly initialized and permanently frozen ($\nabla_\theta f_0 = 0$).*
+
+**Trainable Residual Network $f_\phi(x, z)$**:
+
+$$
+g_\phi(x) = \mathrm{Linear}_{512 \to (2048 \times 6)}\Big(\mathrm{ReLU}\big(\mathrm{Linear}_{512 \to 512}(\mathrm{ReLU}(\mathrm{Linear}_{4096 \to 512}(x)))\big)\Big)
+$$
+
+$$
+f_\phi(x, z) = \mathrm{Reshape}(g_\phi(x), [2048, 6]) \cdot z \in \mathbb{R}^{2048}
+$$
+
+**Combined Epinet Residual**:
+
+$$
+\Delta h(x_t, z) = f_0(x_t, z) + f_\phi(x_t, z)
+$$
+
+**Training Loss (Sampled Cross-Entropy on C4)**:
+
+For $K$ Monte Carlo index draws $z_1, \dots, z_K \sim \mathcal{N}(0, I_6)$:
+
+$$
+\mathcal{L}(\phi) = \frac{1}{|\mathcal{D}| K} \sum_{(x_t, y_t) \in \mathcal{D}} \sum_{k=1}^K \mathrm{CrossEntropy}\left( \ell_t^D + W \cdot [f_0(x_t, z_k) + f_\phi(x_t, z_k)], \; y_t \right)
+$$
 
 ---
 
@@ -147,16 +198,35 @@ The Epinet models parameter/epistemic uncertainty via an epistemic index vector 
 
 Given an input representation $x$ and $K$ epistemic index draws $z_k$:
 
-1. **Sample Logits & Probability Vectors**:
-   $$\ell^{(k)} = \ell^D + W \cdot \Delta h(x, z_k), \qquad p^{(k)} = \operatorname{softmax}(\ell^{(k)}) \in \Delta^{|V|-1}$$
-2. **Mean Predictive Distribution**:
-   $$\bar{p} = \frac{1}{K} \sum_{k=1}^K p^{(k)}$$
-3. **Total Predictive Uncertainty (Entropy of the Mean)**:
-   $$\mathcal{H}_{\text{pred}} = H(\bar{p}) = -\sum_{v \in V} \bar{p}(v) \log \bar{p}(v)$$
-4. **Aleatoric Uncertainty (Mean of Entropies / Data Noise)**:
-   $$\mathcal{H}_{\text{alea}} = \mathbb{E}_z [H(p^{(k)})] = \frac{1}{K} \sum_{k=1}^K \left( -\sum_{v \in V} p^{(k)}(v) \log p^{(k)}(v) \right)$$
-5. **Epistemic Uncertainty (Mutual Information $I(Y; Z \mid X)$ / Model Ignorance)**:
-   $$\mathcal{U}_{\text{epi}} = \max\left(0, \; H(\bar{p}) - \frac{1}{K} \sum_{k=1}^K H(p^{(k)})\right)$$
+**Sample Logits & Probability Vectors**:
+
+$$
+\ell^{(k)} = \ell^D + W \cdot \Delta h(x, z_k), \qquad p^{(k)} = \mathrm{softmax}(\ell^{(k)}) \in \Delta^{|V|-1}
+$$
+
+**Mean Predictive Distribution**:
+
+$$
+\bar{p} = \frac{1}{K} \sum_{k=1}^K p^{(k)}
+$$
+
+**Total Predictive Uncertainty (Entropy of the Mean)**:
+
+$$
+\mathcal{H}_{\mathrm{pred}} = H(\bar{p}) = -\sum_{v \in V} \bar{p}(v) \log \bar{p}(v)
+$$
+
+**Aleatoric Uncertainty (Mean of Entropies / Data Noise)**:
+
+$$
+\mathcal{H}_{\mathrm{alea}} = \mathbb{E}_z [H(p^{(k)})] = \frac{1}{K} \sum_{k=1}^K \left( -\sum_{v \in V} p^{(k)}(v) \log p^{(k)}(v) \right)
+$$
+
+**Epistemic Uncertainty (Mutual Information $I(Y; Z \mid X)$ / Model Ignorance)**:
+
+$$
+\mathcal{U}_{\mathrm{epi}} = \max\left(0, \; H(\bar{p}) - \frac{1}{K} \sum_{k=1}^K H(p^{(k)})\right)
+$$
 
 ---
 
@@ -164,18 +234,38 @@ Given an input representation $x$ and $K$ epistemic index draws $z_k$:
 
 Given $N$ candidate answers $\{a_1, a_2, \dots, a_N\}$ sampled at temperature $T=0.7$, top-$p=0.9$:
 
-1. **Answer Normalization**:
-   $$\tilde{a}_i = \operatorname{Normalize}(\operatorname{ExtractFinalAnswer}(a_i))$$
-2. **Plurality Voting**:
-   $$v(c) = \sum_{i=1}^N \mathbb{1}[\tilde{a}_i = c], \qquad c^* = \arg\max_c v(c)$$
-3. **ENN Confidence-Weighted Voting**:
-   For candidate $i$ spanning answer tokens $t \in \{1, \dots, T_i\}$, the average predictive entropy is $\bar{H}_i = \frac{1}{T_i} \sum_{t=1}^{T_i} H(\bar{p}_{i, t})$.
-   The heuristic confidence weight $w_i \in [0, 1]$ is:
-   $$w_i = \operatorname{clip}\left(1 - \frac{\bar{H}_i}{\log |V|}, \; 0, \; 1\right)$$
-   Weighted score for cluster $c$:
-   $$S(c) = \sum_{i: \tilde{a}_i = c} w_i, \qquad c^* = \arg\max_c S(c)$$
-   Normalized vote confidence:
-   $$\text{Conf}(c^*) = \frac{S(c^*)}{\sum_k S(c_k)}$$
+**Answer Normalization**:
+
+$$
+\tilde{a}_i = \mathrm{Normalize}(\mathrm{ExtractFinalAnswer}(a_i))
+$$
+
+**Plurality Voting**:
+
+$$
+v(c) = \sum_{i=1}^N \mathbb{1}[\tilde{a}_i = c], \qquad c^* = \arg\max_c v(c)
+$$
+
+**ENN Confidence-Weighted Voting**:
+
+For candidate $i$ spanning answer tokens $t \in \{1, \dots, T_i\}$, the average predictive entropy is $\bar{H}_i = \frac{1}{T_i} \sum_{t=1}^{T_i} H(\bar{p}_{i, t})$.
+The heuristic confidence weight $w_i \in [0, 1]$ is:
+
+$$
+w_i = \mathrm{clip}\left(1 - \frac{\bar{H}_i}{\log |V|}, \; 0, \; 1\right)
+$$
+
+Weighted score for cluster $c$:
+
+$$
+S(c) = \sum_{i: \tilde{a}_i = c} w_i, \qquad c^* = \arg\max_c S(c)
+$$
+
+Normalized vote confidence:
+
+$$
+\mathrm{Conf}(c^*) = \frac{S(c^*)}{\sum_k S(c_k)}
+$$
 
 ---
 
@@ -183,36 +273,55 @@ Given $N$ candidate answers $\{a_1, a_2, \dots, a_N\}$ sampled at temperature $T
 
 Implemented in `Neural Network/answer_selector.py`:
 
-1. **Positive Score Aggregation**:
-   $$S_{\text{pos}} = \frac{\sum_{m \in \mathcal{M}} w_m \cdot v_m}{\sum_{m \in \mathcal{M}} w_m}$$
-   *Default Positive Weights $w_m$:*
-   - Factuality Score: $0.24$
-   - Semantic Consistency: $0.22$
-   - Reliability Probability: $0.16$
-   - Claim Support: $0.10$
-   - Token Confidence: $0.08$
-   - Relevance Score: $0.08$
-   - Evidence Support Score: $0.08$
-   - Sequence Probability: $0.04$
-2. **Penalty Aggregation**:
-   $$P = \sum_{p \in \mathcal{P}} \lambda_p \cdot r_p$$
-   *Default Penalty Weights $\lambda_p$:*
-   - Hallucination Score: $0.22$
-   - Contradiction Score: $0.20$
-   - Unsupported Claim: $0.14 \times (1 - \text{claim\_support})$
-   - Unsupported Evidence: $0.10 \times (1 - \text{evidence\_support})$
-   - High Entropy: $0.06 \times \text{entropy\_penalty}$
-3. **Composite Candidate Score**:
-   $$S_{\text{final}} = \operatorname{clip}(S_{\text{pos}} - P, \; 0, \; 1)$$
-4. **Abstention Gating Criteria**:
-   An answer candidate is **ACCEPTED** only if:
-   $$\begin{aligned}
-   S_{\text{final}} &\ge \tau_{\text{reliability}} \quad (\text{default } 0.55) \\
-   \text{Semantic Consistency} &\ge \tau_{\text{consistency}} \quad (\text{default } 0.40) \\
-   \text{Factuality Score} &\ge \tau_{\text{factuality}} \quad (\text{default } 0.45) \\
-   \text{Hallucination Score} &\le \tau_{\text{hallucination}} \quad (\text{default } 0.55)
-   \end{aligned}$$
-   If any gate fails, the decision is **REGENERATE** (abstain and request fresh generation).
+**Positive Score Aggregation**:
+
+$$
+S_{\mathrm{pos}} = \frac{\sum_{m \in \mathcal{M}} w_m \cdot v_m}{\sum_{m \in \mathcal{M}} w_m}
+$$
+
+*Default Positive Weights $w_m$:*
+- Factuality Score: $0.24$
+- Semantic Consistency: $0.22$
+- Reliability Probability: $0.16$
+- Claim Support: $0.10$
+- Token Confidence: $0.08$
+- Relevance Score: $0.08$
+- Evidence Support Score: $0.08$
+- Sequence Probability: $0.04$
+
+**Penalty Aggregation**:
+
+$$
+P = \sum_{p \in \mathcal{P}} \lambda_p \cdot r_p
+$$
+
+*Default Penalty Weights $\lambda_p$:*
+- Hallucination Score: $0.22$
+- Contradiction Score: $0.20$
+- Unsupported Claim: $0.14 \times (1 - \mathrm{claim\_support})$
+- Unsupported Evidence: $0.10 \times (1 - \mathrm{evidence\_support})$
+- High Entropy: $0.06 \times \mathrm{entropy\_penalty}$
+
+**Composite Candidate Score**:
+
+$$
+S_{\mathrm{final}} = \mathrm{clip}(S_{\mathrm{pos}} - P, \; 0, \; 1)
+$$
+
+**Abstention Gating Criteria**:
+
+An answer candidate is **ACCEPTED** only if:
+
+$$
+\begin{aligned}
+S_{\mathrm{final}} &\ge \tau_{\mathrm{reliability}} \quad (\text{default } 0.55) \\
+\text{Semantic Consistency} &\ge \tau_{\mathrm{consistency}} \quad (\text{default } 0.40) \\
+\text{Factuality Score} &\ge \tau_{\mathrm{factuality}} \quad (\text{default } 0.45) \\
+\text{Hallucination Score} &\le \tau_{\mathrm{hallucination}} \quad (\text{default } 0.55)
+\end{aligned}
+$$
+
+If any gate fails, the decision is **REGENERATE** (abstain and request fresh generation).
 
 ---
 
@@ -220,14 +329,29 @@ Implemented in `Neural Network/answer_selector.py`:
 
 For $N$ evaluated examples partitioned into $B$ confidence bins $B_1, \dots, B_B$:
 
-1. **Expected Calibration Error (ECE)**:
-   $$\text{ECE} = \sum_{b=1}^B \frac{|B_b|}{N} |\operatorname{acc}(B_b) - \operatorname{conf}(B_b)|$$
-2. **Brier Score**:
-   $$\text{BS} = \frac{1}{N} \sum_{i=1}^N (c_i - y_i)^2$$
-3. **Negative Log-Likelihood (NLL)**:
-   $$\text{NLL} = -\frac{1}{N} \sum_{i=1}^N \left( y_i \log c_i + (1 - y_i) \log(1 - c_i) \right)$$
-4. **False Accept Rate (FAR) & False Reject Rate (FRR)**:
-   $$\text{FAR} = \frac{\text{FP}}{\text{FP} + \text{TN}}, \qquad \text{FRR} = \frac{\text{FN}}{\text{TP} + \text{FN}}$$
+**Expected Calibration Error (ECE)**:
+
+$$
+\mathrm{ECE} = \sum_{b=1}^B \frac{|B_b|}{N} |\mathrm{acc}(B_b) - \mathrm{conf}(B_b)|
+$$
+
+**Brier Score**:
+
+$$
+\mathrm{BS} = \frac{1}{N} \sum_{i=1}^N (c_i - y_i)^2
+$$
+
+**Negative Log-Likelihood (NLL)**:
+
+$$
+\mathrm{NLL} = -\frac{1}{N} \sum_{i=1}^N \left( y_i \log c_i + (1 - y_i) \log(1 - c_i) \right)
+$$
+
+**False Accept Rate (FAR) & False Reject Rate (FRR)**:
+
+$$
+\mathrm{FAR} = \frac{\mathrm{FP}}{\mathrm{FP} + \mathrm{TN}}, \qquad \mathrm{FRR} = \frac{\mathrm{FN}}{\mathrm{TP} + \mathrm{FN}}
+$$
 
 ---
 
@@ -267,7 +391,7 @@ python main.py --mode eval --no-baseline --no-dola --enn-weight 0.1 --n-question
 ```
 *What happens:*
 1. For each prompt, `Neural Network/dola.py` selects $j_t^*$ dynamically per token.
-2. The contrastive distribution $p_t^D = \operatorname{softmax}(W h_t^m - \alpha W \operatorname{RMSNorm}(h_t^{j^*}))$ is decoded.
+2. The contrastive distribution $p_t^D = \mathrm{softmax}(W h_t^m - \alpha W \mathrm{RMSNorm}(h_t^{j^*}))$ is decoded.
 3. If ENN is active, sampled residuals $\Delta h(x_t, z_k)$ provide token predictive and epistemic uncertainty diagnostics.
 
 ---
@@ -287,7 +411,7 @@ python run_experiment.py --strategy dola_enn_self_consistency --samples 5
 *What happens:*
 1. $N$ candidates are sampled per question ($T=0.7, p=0.9$).
 2. Candidate answers are normalized (`Neural Network/self_consistency.py`).
-3. For ENN-weighted voting, candidate predictive entropy is computed across tokens and converted into confidence weights $w_i = \operatorname{clip}(1 - \bar{H}_i/\log|V|, 0, 1)$.
+3. For ENN-weighted voting, candidate predictive entropy is computed across tokens and converted into confidence weights $w_i = \mathrm{clip}(1 - \bar{H}_i/\log|V|, 0, 1)$.
 4. Results, calibration curves, ECE, and confusion breakdowns are saved to `results/`.
 
 ---
