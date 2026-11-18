@@ -11,18 +11,31 @@ import torch.nn.functional as F
 def next_token_distribution(model, input_ids, method: str, alpha: float = 1.0,
                             epinet=None, vocab_head_weight: Optional[np.ndarray] = None,
                             n_z_samples: int = 3, enn_weight: float = 0.0,
-                            past_key_values=None, return_cache: bool = False):
+                            past_key_values=None, return_cache: bool = False,
+                            attention_mask=None):
     """Return final logits, selected DoLa layer, and uncertainty diagnostics."""
     selected_layer = None
     uncertainty = None
+    if attention_mask is None and past_key_values is None:
+        attention_mask = torch.ones_like(input_ids)
     if method == "base":
-        out = model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
+        out = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            use_cache=True,
+        )
         logits = out.logits
         new_cache = out.past_key_values
     else:
         from dola import dola_step_logits
         dola_raw, selected, mature, premature, new_cache = dola_step_logits(
-            model, input_ids, past_key_values=past_key_values, alpha=alpha)
+            model,
+            input_ids,
+            past_key_values=past_key_values,
+            alpha=alpha,
+            attention_mask=attention_mask,
+        )
         selected_layer = (selected[:, -1].detach().cpu().tolist() if selected.shape[0] > 1
                           else int(selected[0, -1]))
         logits = dola_raw

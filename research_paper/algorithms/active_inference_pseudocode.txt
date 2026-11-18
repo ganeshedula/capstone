@@ -1,0 +1,14 @@
+Algorithm 1: Active inference and reliability-aware selection
+
+Input: prompt q, frozen TinyLlama M, optional active ENN E, candidate count N
+1. Encode q with the TinyLlama chat template.
+2. For i = 1,...,N, decode Base or DoLa. For DoLa, compute mature and
+   candidate premature distributions and select j* by maximum JSD.
+3. If E exists, sample epistemic indices z and compute predictive, aleatoric,
+   and epistemic token-distribution diagnostics.
+4. Normalize candidate strings and cluster semantically similar answers.
+5. Compute plurality and entropy-weighted votes.
+6. If a supervised answer-level detector exists, apply a threshold selected
+   on validation data only.
+7. Return the answer, accept/reject decision, uncertainty diagnostics, and
+   experiment provenance.

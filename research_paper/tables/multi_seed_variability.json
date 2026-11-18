@@ -1,0 +1,8 @@
+{
+  "accuracy_mean": 0.7611,
+  "accuracy_std": 0.0023,
+  "f1_mean": 0.3668,
+  "f1_std": 0.0101,
+  "auroc_mean": 0.6351,
+  "auroc_std": 0.001
+}

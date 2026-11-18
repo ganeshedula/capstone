@@ -1,0 +1,212 @@
+/* Neural Streamlit Custom Styling */
+
+/* Main Container and Typography */
+.block-container {
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+    max-width: 1100px;
+}
+
+/* Header & Subtitle */
+.neural-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 0.25rem;
+}
+
+.neural-brand-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+    color: white;
+    border-radius: 8px;
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+
+.neural-title {
+    font-size: 1.85rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0;
+}
+
+.neural-subtitle {
+    color: #64748b;
+    font-size: 0.95rem;
+    margin-bottom: 1.5rem;
+}
+
+/* Status Pill Bar */
+.status-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 1.25rem;
+    padding: 8px 14px;
+    background: rgba(100, 116, 139, 0.08);
+    border-radius: 10px;
+    border: 1px solid rgba(100, 116, 139, 0.15);
+    font-size: 0.82rem;
+}
+
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    background: rgba(255, 255, 255, 0.7);
+    border-radius: 6px;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    font-weight: 500;
+}
+
+@media (prefers-color-scheme: dark) {
+    .status-pill {
+        background: rgba(30, 41, 59, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #e2e8f0;
+    }
+}
+
+.status-dot-active {
+    width: 8px;
+    height: 8px;
+    background-color: #10b981;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.status-dot-idle {
+    width: 8px;
+    height: 8px;
+    background-color: #94a3b8;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+/* Decision Cards */
+.decision-banner-accept {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(5, 150, 105, 0.06) 100%);
+    border: 1px solid #10b981;
+    border-radius: 10px;
+    padding: 12px 18px;
+    margin: 12px 0 16px 0;
+}
+
+.decision-banner-caution {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(217, 119, 6, 0.06) 100%);
+    border: 1px solid #f59e0b;
+    border-radius: 10px;
+    padding: 12px 18px;
+    margin: 12px 0 16px 0;
+}
+
+.decision-badge-accept {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background-color: #10b981;
+    color: white;
+    font-weight: 700;
+    font-size: 0.85rem;
+    padding: 4px 12px;
+    border-radius: 6px;
+    letter-spacing: 0.03em;
+}
+
+.decision-badge-caution {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background-color: #f59e0b;
+    color: white;
+    font-weight: 700;
+    font-size: 0.85rem;
+    padding: 4px 12px;
+    border-radius: 6px;
+    letter-spacing: 0.03em;
+}
+
+.decision-reason {
+    font-size: 0.85rem;
+    color: #475569;
+}
+
+@media (prefers-color-scheme: dark) {
+    .decision-reason {
+        color: #cbd5e1;
+    }
+}
+
+/* Pipeline Candidate Card */
+.candidate-box {
+    border-left: 3px solid #3b82f6;
+    background: rgba(59, 130, 246, 0.04);
+    border-radius: 0 8px 8px 0;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+}
+
+.evidence-box {
+    border-left: 3px solid #10b981;
+    background: rgba(16, 185, 129, 0.05);
+    border-radius: 0 8px 8px 0;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    font-size: 0.9rem;
+}
+
+/* Selected final answer */
+.selected-answer-card {
+    margin-top: 8px;
+    padding: 16px 18px;
+    border: 2px solid #8b5cf6;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.14), rgba(59, 130, 246, 0.08));
+    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.16);
+}
+
+.selected-answer-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    color: #312e81;
+    font-size: 0.95rem;
+    font-weight: 800;
+}
+
+.selected-answer-text {
+    padding: 13px 14px;
+    border-left: 4px solid #8b5cf6;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.72);
+    color: #111827;
+    font-size: 1.05rem;
+    font-weight: 650;
+    line-height: 1.7;
+    white-space: pre-wrap;
+}
+
+@media (prefers-color-scheme: dark) {
+    .selected-answer-heading {
+        color: #ddd6fe;
+    }
+
+    .selected-answer-text {
+        background: rgba(15, 23, 42, 0.58);
+        color: #f8fafc;
+    }
+}

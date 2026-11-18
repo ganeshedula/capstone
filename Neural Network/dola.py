@@ -380,6 +380,7 @@ def dola_step_logits(
     alpha: float = 1.0,
     fixed_premature_layer: Optional[int] = None,
     stats: Optional[DoLaStats] = None,
+    attention_mask: Optional[torch.Tensor] = None,
 ):
     """Compute DoLa logits for the latest token, optionally using a KV cache.
 
@@ -394,6 +395,7 @@ def dola_step_logits(
     out = model(
         input_ids=input_ids,
         past_key_values=past_key_values,
+        attention_mask=attention_mask,
         output_hidden_states=True,
         use_cache=True,
     )

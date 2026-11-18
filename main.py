@@ -739,8 +739,18 @@ def run_interactive_self_consistency(args, model, tokenizer, device, question, i
     evidence, retrieval_note = ([], None)
     if args.use_rag:
         from rag import retrieve_evidence
-        evidence, retrieval_note = retrieve_evidence(question)
-        if retrieval_note: print(f"[RAG] {retrieval_note}")
+        evidence = getattr(args, "retrieved_evidence", None)
+        retrieval_note = getattr(args, "retrieval_note", None)
+        if evidence is None:
+            evidence, retrieval_note = retrieve_evidence(
+                question, limit=getattr(args, "rag_limit", 3)
+            )
+        if retrieval_note:
+            print(f"[RAG] {retrieval_note}")
+        elif evidence:
+            print(f"[RAG] Retrieved {len(evidence)} WikiRag evidence passage(s).")
+        else:
+            print("[RAG] No WikiRag evidence matched the question.")
     samples = generate_candidate_batch(model, tokenizer, ids, "dola", args.sc_samples,
                                       alpha=args.alpha, max_new_tokens=args.max_new_tokens,
                                       temperature=temperature, top_p=args.top_p)
@@ -791,6 +801,7 @@ def run_interactive_self_consistency(args, model, tokenizer, device, question, i
             "token_confidence": mean_conf,
             "sequence_probability": item.get("normalized_sequence_probability", 0.0),
             "entropy_penalty": min(1.0, mean_entropy / entropy_scale),
+            "evidence_available": bool(evidence),
             "verifier_parse_ok": factual["verifier_parse_ok"],
         }
         enn_path = os.path.join(_ROOT, "checkpoints", "reliability_enn.pt")
@@ -891,7 +902,7 @@ def _pct(value):
     except (TypeError, ValueError): return "N/A"
 
 
-def print_interactive_report(question, base, dola, sc_answer, enn, winner, decision, clustering, reports, enn_status):
+def print_interactive_report(question, base, dola, sc_answer, enn, winner, decision, clustering, reports, enn_status, evidence=None):
     print("\nHALLUCINATION ANALYSIS")
     print(f"Question: {question}\n")
     rows = [("BASE", base["answer"]), ("DOLA", dola["answer"]),
@@ -928,6 +939,13 @@ def print_interactive_report(question, base, dola, sc_answer, enn, winner, decis
     print(f"ENN reliability estimate: {_pct(m.get('reliability_probability'))}")
     print(f"ENN / Reliability: {_pct(m.get('reliability_probability'))} | epistemic uncertainty: N/A | status: {'TRAINED' if os.path.exists(os.path.join(_ROOT, 'checkpoints', 'reliability_enn.pt')) else 'HEURISTIC / UNCALIBRATED'}")
     print(f"Verifier status: {winner.get('factuality', {}).get('verifier_status', 'FALLBACK')}\n")
+    if evidence:
+        print("RETRIEVED WIKIRAG EVIDENCE (RAG)")
+        print("-" * 74)
+        from rag import evidence_text
+        for i, snip in enumerate(evidence, 1):
+            print(f"[{i}] {evidence_text(snip)}\n")
+        print("-" * 74)
     print("╔══════════════════════════════════════════════════════════════════════╗")
     print("║ FINAL RESULT                                                         ║")
     print("╠══════════════════════════════════════════════════════════════════════╣")
@@ -1018,7 +1036,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--semantic-similarity-threshold", type=float, default=0.78)
     p.add_argument("--score-weights", default=None, help="JSON object mapping score names to non-negative weights")
     p.add_argument("--penalty-weights", default=None, help="JSON object: contradiction, hallucination, entropy, unsupported_claim")
-    p.add_argument("--use-rag", action="store_true", help="Retrieve Wikipedia evidence for optional factuality checking")
+    p.add_argument("--use-rag", action="store_true", help="Retrieve WikiRag/Qdrant evidence for optional factuality checking")
 
     # Flags
     p.add_argument("--force-extract", action="store_true", help="Re-extract features")
@@ -1109,7 +1127,8 @@ def main() -> None:
             winner = decision.get("selected") or max(reports, key=lambda item: item.get("final_score", 0))
             print_interactive_report(question, base, dola, winner.get("answer", ""), enn, winner,
                                      decision["decision"], clustering, reports,
-                                     os.path.exists(os.path.join(_ROOT, "checkpoints", "reliability_enn.pt")))
+                                     os.path.exists(os.path.join(_ROOT, "checkpoints", "reliability_enn.pt")),
+                                     evidence=evidence)
 
     elif args.mode == "dola-sweep":
         cmd_dola_sweep(args, model, tokenizer, device)

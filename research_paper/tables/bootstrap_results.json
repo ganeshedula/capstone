@@ -1,0 +1,617 @@
+{
+  "DoLa + ENN-V2 (E5b) vs DoLa + ENN-V2 + SC (E7)": {
+    "accuracy": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "balanced_accuracy": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "precision": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "recall": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "f1": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "far": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "frr": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "mcc": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "cohen_kappa": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "auroc": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "auprc": {
+      "point_delta": 0.0,
+      "mean_delta": 0.0,
+      "std_delta": 0.0,
+      "ci_95": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    }
+  },
+  "DoLa + ENN-V2 (E5b) vs TinyLlama + DoLa (E5)": {
+    "accuracy": {
+      "point_delta": 0.4692,
+      "mean_delta": 0.4677,
+      "std_delta": 0.046,
+      "ci_95": [
+        0.3762,
+        0.5556
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "balanced_accuracy": {
+      "point_delta": 0.0966,
+      "mean_delta": 0.097,
+      "std_delta": 0.0409,
+      "ci_95": [
+        0.0221,
+        0.1819
+      ],
+      "p_value": 0.0104,
+      "significant": true
+    },
+    "precision": {
+      "point_delta": 0.3971,
+      "mean_delta": 0.4132,
+      "std_delta": 0.1395,
+      "ci_95": [
+        0.1612,
+        0.6907
+      ],
+      "p_value": 0.0012,
+      "significant": true
+    },
+    "recall": {
+      "point_delta": -0.6667,
+      "mean_delta": -0.6663,
+      "std_delta": 0.074,
+      "ci_95": [
+        -0.7963,
+        -0.5185
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "f1": {
+      "point_delta": -0.0786,
+      "mean_delta": -0.0819,
+      "std_delta": 0.0816,
+      "ci_95": [
+        -0.241,
+        0.0795
+      ],
+      "p_value": 0.3272,
+      "significant": false
+    },
+    "far": {
+      "point_delta": -0.8599,
+      "mean_delta": -0.8603,
+      "std_delta": 0.0443,
+      "ci_95": [
+        -0.9387,
+        -0.7651
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "frr": {
+      "point_delta": 0.6667,
+      "mean_delta": 0.6663,
+      "std_delta": 0.074,
+      "ci_95": [
+        0.5185,
+        0.7963
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "mcc": {
+      "point_delta": 0.3041,
+      "mean_delta": 0.3115,
+      "std_delta": 0.1199,
+      "ci_95": [
+        0.0828,
+        0.5554
+      ],
+      "p_value": 0.0036,
+      "significant": true
+    },
+    "cohen_kappa": {
+      "point_delta": 0.2287,
+      "mean_delta": 0.2283,
+      "std_delta": 0.0794,
+      "ci_95": [
+        0.0779,
+        0.3873
+      ],
+      "p_value": 0.0016,
+      "significant": true
+    },
+    "auroc": {
+      "point_delta": 0.0469,
+      "mean_delta": 0.0463,
+      "std_delta": 0.0629,
+      "ci_95": [
+        -0.075,
+        0.1715
+      ],
+      "p_value": 0.4836,
+      "significant": false
+    },
+    "auprc": {
+      "point_delta": -0.0123,
+      "mean_delta": -0.013,
+      "std_delta": 0.0702,
+      "ci_95": [
+        -0.1458,
+        0.1299
+      ],
+      "p_value": 0.8272,
+      "significant": false
+    }
+  },
+  "Complete Combined Architecture vs DoLa + ENN-V2 (E5b)": {
+    "accuracy": {
+      "point_delta": -0.0427,
+      "mean_delta": -0.0426,
+      "std_delta": 0.0291,
+      "ci_95": [
+        -0.1043,
+        0.0099
+      ],
+      "p_value": 0.138,
+      "significant": false
+    },
+    "balanced_accuracy": {
+      "point_delta": 0.0442,
+      "mean_delta": 0.0443,
+      "std_delta": 0.0311,
+      "ci_95": [
+        -0.0175,
+        0.1046
+      ],
+      "p_value": 0.1568,
+      "significant": false
+    },
+    "precision": {
+      "point_delta": -0.1871,
+      "mean_delta": -0.1986,
+      "std_delta": 0.1163,
+      "ci_95": [
+        -0.4444,
+        0.0039
+      ],
+      "p_value": 0.0564,
+      "significant": false
+    },
+    "recall": {
+      "point_delta": 0.2222,
+      "mean_delta": 0.2238,
+      "std_delta": 0.0577,
+      "ci_95": [
+        0.1111,
+        0.3333
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "f1": {
+      "point_delta": 0.1324,
+      "mean_delta": 0.1357,
+      "std_delta": 0.0597,
+      "ci_95": [
+        0.0263,
+        0.2574
+      ],
+      "p_value": 0.016,
+      "significant": true
+    },
+    "far": {
+      "point_delta": 0.1338,
+      "mean_delta": 0.1352,
+      "std_delta": 0.0393,
+      "ci_95": [
+        0.0645,
+        0.2197
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "frr": {
+      "point_delta": -0.2222,
+      "mean_delta": -0.2238,
+      "std_delta": 0.0577,
+      "ci_95": [
+        -0.3333,
+        -0.1111
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "mcc": {
+      "point_delta": -0.0047,
+      "mean_delta": -0.0054,
+      "std_delta": 0.0722,
+      "ci_95": [
+        -0.1497,
+        0.1321
+      ],
+      "p_value": 0.9528,
+      "significant": false
+    },
+    "cohen_kappa": {
+      "point_delta": 0.0468,
+      "mean_delta": 0.0481,
+      "std_delta": 0.0672,
+      "ci_95": [
+        -0.0831,
+        0.1791
+      ],
+      "p_value": 0.4848,
+      "significant": false
+    },
+    "auroc": {
+      "point_delta": 0.0514,
+      "mean_delta": 0.0513,
+      "std_delta": 0.0319,
+      "ci_95": [
+        -0.0093,
+        0.1141
+      ],
+      "p_value": 0.108,
+      "significant": false
+    },
+    "auprc": {
+      "point_delta": 0.0551,
+      "mean_delta": 0.0679,
+      "std_delta": 0.026,
+      "ci_95": [
+        0.0217,
+        0.1228
+      ],
+      "p_value": 0.002,
+      "significant": true
+    }
+  },
+  "2048-D ENN Alone (E2_B) vs DoLa + ENN-V2 (E5b)": {
+    "accuracy": {
+      "point_delta": 0.0142,
+      "mean_delta": 0.0141,
+      "std_delta": 0.0172,
+      "ci_95": [
+        -0.0144,
+        0.0529
+      ],
+      "p_value": 0.5224,
+      "significant": false
+    },
+    "balanced_accuracy": {
+      "point_delta": 0.0217,
+      "mean_delta": 0.0216,
+      "std_delta": 0.0169,
+      "ci_95": [
+        -0.0067,
+        0.0583
+      ],
+      "p_value": 0.186,
+      "significant": false
+    },
+    "precision": {
+      "point_delta": 0.0752,
+      "mean_delta": 0.066,
+      "std_delta": 0.1238,
+      "ci_95": [
+        -0.119,
+        0.3333
+      ],
+      "p_value": 0.7368,
+      "significant": false
+    },
+    "recall": {
+      "point_delta": 0.037,
+      "mean_delta": 0.0373,
+      "std_delta": 0.026,
+      "ci_95": [
+        0.0,
+        0.0926
+      ],
+      "p_value": 0.2664,
+      "significant": false
+    },
+    "f1": {
+      "point_delta": 0.0513,
+      "mean_delta": 0.0516,
+      "std_delta": 0.0355,
+      "ci_95": [
+        -0.0087,
+        0.1288
+      ],
+      "p_value": 0.1332,
+      "significant": false
+    },
+    "far": {
+      "point_delta": -0.0064,
+      "mean_delta": -0.0059,
+      "std_delta": 0.0213,
+      "ci_95": [
+        -0.0541,
+        0.0284
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    "frr": {
+      "point_delta": -0.037,
+      "mean_delta": -0.0373,
+      "std_delta": 0.026,
+      "ci_95": [
+        -0.0926,
+        0.0
+      ],
+      "p_value": 0.2664,
+      "significant": false
+    },
+    "mcc": {
+      "point_delta": 0.061,
+      "mean_delta": 0.0586,
+      "std_delta": 0.0625,
+      "ci_95": [
+        -0.0458,
+        0.1947
+      ],
+      "p_value": 0.388,
+      "significant": false
+    },
+    "cohen_kappa": {
+      "point_delta": 0.0539,
+      "mean_delta": 0.0533,
+      "std_delta": 0.0445,
+      "ci_95": [
+        -0.0213,
+        0.1487
+      ],
+      "p_value": 0.214,
+      "significant": false
+    },
+    "auroc": {
+      "point_delta": 0.0731,
+      "mean_delta": 0.0734,
+      "std_delta": 0.0237,
+      "ci_95": [
+        0.0282,
+        0.1216
+      ],
+      "p_value": 0.0004,
+      "significant": true
+    },
+    "auprc": {
+      "point_delta": 0.1195,
+      "mean_delta": 0.1197,
+      "std_delta": 0.0264,
+      "ci_95": [
+        0.0679,
+        0.1714
+      ],
+      "p_value": 0.0,
+      "significant": true
+    }
+  },
+  "Complete Combined Architecture vs TinyLlama + DoLa (E5)": {
+    "accuracy": {
+      "point_delta": 0.4265,
+      "mean_delta": 0.425,
+      "std_delta": 0.0537,
+      "ci_95": [
+        0.3191,
+        0.5271
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "balanced_accuracy": {
+      "point_delta": 0.1408,
+      "mean_delta": 0.1413,
+      "std_delta": 0.0479,
+      "ci_95": [
+        0.0503,
+        0.2368
+      ],
+      "p_value": 0.0008,
+      "significant": true
+    },
+    "precision": {
+      "point_delta": 0.21,
+      "mean_delta": 0.2146,
+      "std_delta": 0.0752,
+      "ci_95": [
+        0.0767,
+        0.3748
+      ],
+      "p_value": 0.0012,
+      "significant": true
+    },
+    "recall": {
+      "point_delta": -0.4444,
+      "mean_delta": -0.4425,
+      "std_delta": 0.0772,
+      "ci_95": [
+        -0.5926,
+        -0.2963
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "f1": {
+      "point_delta": 0.0539,
+      "mean_delta": 0.0539,
+      "std_delta": 0.0671,
+      "ci_95": [
+        -0.0732,
+        0.1859
+      ],
+      "p_value": 0.4248,
+      "significant": false
+    },
+    "far": {
+      "point_delta": -0.7261,
+      "mean_delta": -0.7251,
+      "std_delta": 0.0564,
+      "ci_95": [
+        -0.8305,
+        -0.61
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "frr": {
+      "point_delta": 0.4444,
+      "mean_delta": 0.4425,
+      "std_delta": 0.0772,
+      "ci_95": [
+        0.2963,
+        0.5926
+      ],
+      "p_value": 0.0,
+      "significant": true
+    },
+    "mcc": {
+      "point_delta": 0.2994,
+      "mean_delta": 0.306,
+      "std_delta": 0.1137,
+      "ci_95": [
+        0.0935,
+        0.5344
+      ],
+      "p_value": 0.0024,
+      "significant": true
+    },
+    "cohen_kappa": {
+      "point_delta": 0.2756,
+      "mean_delta": 0.2764,
+      "std_delta": 0.088,
+      "ci_95": [
+        0.1068,
+        0.4502
+      ],
+      "p_value": 0.0004,
+      "significant": true
+    },
+    "auroc": {
+      "point_delta": 0.0983,
+      "mean_delta": 0.0976,
+      "std_delta": 0.0465,
+      "ci_95": [
+        0.0113,
+        0.1909
+      ],
+      "p_value": 0.0264,
+      "significant": true
+    },
+    "auprc": {
+      "point_delta": 0.0427,
+      "mean_delta": 0.0549,
+      "std_delta": 0.0653,
+      "ci_95": [
+        -0.0635,
+        0.189
+      ],
+      "p_value": 0.4168,
+      "significant": false
+    }
+  }
+}

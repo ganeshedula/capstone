@@ -147,6 +147,7 @@ class AskHandler(SimpleHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description="Start the local ask-mode chat page")
+    parser.add_argument("--streamlit", action="store_true", help="Launch the new Streamlit web console")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--sc-samples", type=int, default=5)
@@ -166,6 +167,14 @@ def main():
     args = parser.parse_args()
     if args.sc_samples < 1 or args.max_new_tokens < 1:
         parser.error("--sc-samples and --max-new-tokens must be positive")
+
+    if args.streamlit:
+        import subprocess
+        app_file = os.path.join(ROOT, "web", "app.py")
+        venv_py = os.path.join(ROOT, "llm_hallucination_env", "bin", "python")
+        py_cmd = venv_py if os.path.exists(venv_py) else sys.executable
+        subprocess.run([py_cmd, "-m", "streamlit", "run", app_file, "--server.port", str(args.port), "--server.address", args.host])
+        return
 
     device, dtype = pipeline.get_device()
     print(f"[ask-web] Loading TinyLlama on {device}; this can take a moment.")

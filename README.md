@@ -71,6 +71,8 @@ python -m pip install -r requirements.txt
 
 The requirements install PyTorch, Transformers, Datasets, NumPy, PyYAML, Matplotlib, and tqdm. On Apple Silicon, install a PyTorch build with MPS support if you want Metal acceleration. On NVIDIA systems, install the PyTorch build matching your CUDA runtime. `main.py` automatically chooses CUDA, then MPS, then CPU; `run_experiment.py` uses the same device order and also has a `--device` override.
 
+The interactive WikiRag evidence backend additionally uses Qdrant, a Hugging Face sentence embedding model, and DuckDuckGo context expansion. Set `WIKIRAG_QDRANT_URL`, `WIKIRAG_QDRANT_COLLECTION`, and optionally `WIKIRAG_EMBEDDING_MODEL` before starting the app. For authenticated Qdrant deployments, set `WIKIRAG_QDRANT_API_KEY`. Defaults are `http://localhost:6333`, `wikipedia`, and `sentence-transformers/all-MiniLM-L6-v2`. The Qdrant collection must already contain vectors generated with the same embedding model; the adapter reads the `content`, `title`, and `url` payload fields produced by WikiRag's vectorization pipeline. `WIKIRAG_EXPAND_CONTEXT=true` enables DuckDuckGo expansion (enabled by default); set it to `false` to restrict evidence to Qdrant. The equivalent non-secret defaults are in the `rag` section of `config.yaml`.
+
 ### 3. Download TinyLlama
 
 The model is not included in Git. The code expects the model files under:
@@ -203,7 +205,7 @@ source llm_hallucination_env/bin/activate
 python main.py --mode ask --sc-samples 5 --max-new-tokens 48
 ```
 
-Enter a question at each prompt; submit a blank prompt to exit. The default output compares Base TinyLlama, DoLa, Self-Consistency, DoLa + ENN, and the final selection. Add `--verbose` to display candidate answers and diagnostics. `--quiet` hides startup details. `--use-rag` enables optional Wikipedia evidence, and `--max-new-tokens` controls answer generation. `results.csv` and `comparison_results.csv` are updated for each question; no accuracy claim is made without labeled evaluation data.
+Enter a question at each prompt; submit a blank prompt to exit. The default output compares Base TinyLlama, DoLa, Self-Consistency, DoLa + ENN, and the final selection. Add `--verbose` to display candidate answers and diagnostics. `--quiet` hides startup details. `--use-rag` enables optional WikiRag evidence from Qdrant with DuckDuckGo expansion for weak matches, and `--max-new-tokens` controls answer generation. `results.csv` and `comparison_results.csv` are updated for each question; no accuracy claim is made without labeled evaluation data.
 
 The existing `checkpoints/enn_best.pt` is a token-prediction Epinet, not an answer-correctness classifier. To train the separate reliability ENN, provide a JSONL file with labeled rows such as `{"features":{"mean_token_confidence":0.7,"factuality_score":0.8},"reliable":1}` and run:
 

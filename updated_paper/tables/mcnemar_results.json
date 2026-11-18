@@ -1,0 +1,42 @@
+{
+  "DoLa + ENN-V2 (E5b) vs DoLa + ENN-V2 + SC (E7)": {
+    "b_a_better": 0,
+    "c_b_better": 0,
+    "n_discordant": 0,
+    "chi2_stat": 0.0,
+    "p_value": 1.0,
+    "significant": false
+  },
+  "DoLa + ENN-V2 (E5b) vs TinyLlama + DoLa (E5)": {
+    "b_a_better": 138,
+    "c_b_better": 39,
+    "n_discordant": 177,
+    "chi2_stat": 54.2599,
+    "p_value": 0.0,
+    "significant": true
+  },
+  "Complete Combined Architecture vs DoLa + ENN-V2 (E5b)": {
+    "b_a_better": 12,
+    "c_b_better": 21,
+    "n_discordant": 33,
+    "chi2_stat": 1.9394,
+    "p_value": 0.162756,
+    "significant": false
+  },
+  "2048-D ENN Alone (E2_B) vs DoLa + ENN-V2 (E5b)": {
+    "b_a_better": 5,
+    "c_b_better": 2,
+    "n_discordant": 7,
+    "chi2_stat": 0.5714,
+    "p_value": 0.453125,
+    "significant": false
+  },
+  "Complete Combined Architecture vs TinyLlama + DoLa (E5)": {
+    "b_a_better": 117,
+    "c_b_better": 27,
+    "n_discordant": 144,
+    "chi2_stat": 55.0069,
+    "p_value": 0.0,
+    "significant": true
+  }
+}

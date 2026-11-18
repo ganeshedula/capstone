@@ -12,12 +12,27 @@ build/
 *.whl
 
 # ========================
-# Virtual Environment
+# Testing & Code Quality
+# ========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.deepeval/
+
+# ========================
+# Virtual Environments
 # ========================
 llm_hallucination_env/
 venv/
 .venv/
 env/
+ENV/
+env.bak/
+venv.bak/
 
 # ========================
 # Model Weights & Checkpoints
@@ -31,39 +46,109 @@ checkpoints/
 *.safetensors
 *.onnx
 *.gguf
+*.h5
+*.tflite
 
 # ========================
-# Datasets
+# Datasets & Data
 # (Typically too large for Git — download via script or HuggingFace)
 # ========================
 dataset/
+datasets/
+data/
 
 # ========================
-# HuggingFace Cache
+# Caches
 # ========================
 .cache/
+.huggingface/
+.torch/
 
 # ========================
-# Output & Results
+# Output, Results & Temp Files
 # (Regenerable artifacts)
 # ========================
 output/
 results/
+tmp/
+temp/
+*.tmp
+*.bak
+.thesis_tmp/
 
 # ========================
-# IDE & Editor
+# LaTeX Intermediate Build Artifacts
+# ========================
+*.aux
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+*.toc
+*.lof
+*.lot
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.synctex
+*.synctex(busy)
+*.nav
+*.snm
+*.vrb
+*.dvi
+*.ist
+*.glo
+*.gls
+*.glg
+*.idx
+*.ind
+*.ilg
+
+# ========================
+# Archives & Compressed Bundles
+# ========================
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+
+# ========================
+# Web & Streamlit
+# ========================
+.streamlit/secrets.toml
+.streamlit/*.local.toml
+
+# ========================
+# Node & Frontend Dependencies
+# ========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ========================
+# IDE & Editors
 # ========================
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+*.sublime-project
+*.sublime-workspace
 
 # ========================
 # OS Files
 # ========================
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 Thumbs.db
+ehthumbs.db
 
 # ========================
 # Jupyter Notebooks
@@ -71,14 +156,16 @@ Thumbs.db
 .ipynb_checkpoints/
 
 # ========================
-# Environment & Secrets
+# Environment, Secrets & Local Agent Config
 # ========================
 .env
 .env.*
+!.env.example
 *.key
+*.local.json
+.claude/settings.local.json
 
 # ========================
 # Misc
 # ========================
 *.log
-*.tmp

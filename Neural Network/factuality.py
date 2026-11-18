@@ -10,7 +10,15 @@ import torch
 
 @torch.inference_mode()
 def verify_answer(model, tokenizer, question, answer, evidence=None, max_new_tokens=100):
-    evidence_text = "\n".join(f"- {x}" for x in (evidence or [])) or "No external evidence supplied."
+    def format_evidence(item):
+      if isinstance(item, dict):
+        text = str(item.get("text", "")).strip()
+        source = str(item.get("source", "")).strip()
+        url = str(item.get("url", "")).strip()
+        attribution = " — ".join(value for value in (source, url) if value)
+        return f"{text} [Source: {attribution}]" if text and attribution else text
+      return str(item).strip()
+    evidence_text = "\n".join(f"- {format_evidence(x)}" for x in (evidence or []) if format_evidence(x)) or "No external evidence supplied."
     def prompt_for(strict=False):
       schema = ('{"factuality_score": 0.0, "hallucination_score": 0.0, '
                 '"contradiction_score": 0.0, "claim_support": 0.0, '
@@ -34,8 +42,9 @@ def verify_answer(model, tokenizer, question, answer, evidence=None, max_new_tok
     raw = ""
     for attempt in range(2):
         prompt = prompt_for(strict=bool(attempt))
-        ids = tokenizer(prompt, return_tensors="pt").input_ids.to(next(model.parameters()).device)
-        generated = model.generate(ids, do_sample=False, max_new_tokens=max_new_tokens,
+        inputs = tokenizer(prompt, return_tensors="pt").to(next(model.parameters()).device)
+        ids = inputs.input_ids
+        generated = model.generate(**inputs, do_sample=False, max_new_tokens=max_new_tokens,
                                    pad_token_id=tokenizer.eos_token_id,
                                    eos_token_id=tokenizer.eos_token_id)
         raw = tokenizer.decode(generated[0, ids.shape[1]:], skip_special_tokens=True)

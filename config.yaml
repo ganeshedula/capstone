@@ -22,3 +22,9 @@ evaluation:
 paths:
   results: results
   checkpoints: checkpoints
+rag:
+  qdrant_url: http://localhost:6333
+  collection: wikipedia
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2
+  min_relevance: 0.35
+  expand_context: true
